@@ -418,7 +418,8 @@ final class SecondWeighingController extends Controller
                 ol.driver_name,
                 s.code AS silo_code,
                 s.name AS silo_name,
-                ol.operation_number AS barcode,
+                COALESCE(ol.outbound_barcode, ol.operation_number) AS barcode,
+                ol.outbound_barcode,
                 ol.assigned_at AS directed_at,
                 COALESCE(ol.assigned_at, ol.updated_at) AS queue_time,
                 NULL AS unloading_completed_at,
@@ -515,6 +516,12 @@ final class SecondWeighingController extends Controller
                 net_quantity_kg REAL NULL,
                 status TEXT NOT NULL,
                 assigned_at TEXT NULL,
+                outbound_barcode TEXT NULL,
+                outbound_barcode_issued_at TEXT NULL,
+                filling_completed_at TEXT NULL,
+                analysis_result TEXT NULL,
+                analysis_note TEXT NULL,
+                analyzed_at TEXT NULL,
                 completed_at TEXT NULL,
                 note TEXT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -524,6 +531,18 @@ final class SecondWeighingController extends Controller
         $columns = array_column($database->query('PRAGMA table_info(outbound_loadings)')->fetchAll(PDO::FETCH_ASSOC), 'name');
         if (! in_array('operation_type', $columns, true)) {
             $database->exec('ALTER TABLE outbound_loadings ADD COLUMN operation_type TEXT NOT NULL DEFAULT "PRODUCT_OUT"');
+        }
+        foreach ([
+            'outbound_barcode' => 'TEXT NULL',
+            'outbound_barcode_issued_at' => 'TEXT NULL',
+            'filling_completed_at' => 'TEXT NULL',
+            'analysis_result' => 'TEXT NULL',
+            'analysis_note' => 'TEXT NULL',
+            'analyzed_at' => 'TEXT NULL',
+        ] as $column => $definition) {
+            if (! in_array($column, $columns, true)) {
+                $database->exec('ALTER TABLE outbound_loadings ADD COLUMN ' . $column . ' ' . $definition);
+            }
         }
         $database->exec(
             'CREATE TABLE IF NOT EXISTS silo_stock_movements (

@@ -34,8 +34,10 @@ $statusLabels = [
 $outboundStatusLabels = [
     'OUTBOUND_PRE_NOTIFIED' => 'Çıkış ön bildirimi',
     'OUTBOUND_ARRIVED' => '1. tartım bekliyor',
-    'OUTBOUND_FIRST_WEIGHED' => 'Yükleme alanına yönlendirme bekliyor',
-    'OUTBOUND_LOADING_ASSIGNED_TO_SILO' => 'Yükleme alanına yönlendirildi',
+    'OUTBOUND_FIRST_WEIGHED' => 'Barkod basıldı',
+    'OUTBOUND_LOADING_ASSIGNED_TO_SILO' => 'Doluma gönderildi',
+    'OUTBOUND_ANALYSIS_PENDING' => 'Analiz bekliyor',
+    'OUTBOUND_ANALYSIS_DONE' => 'Analiz tamamlandı',
     'OUTBOUND_SECOND_WEIGHING_WAITING' => '2. tartım bekliyor',
     'OUTBOUND_COMPLETED' => 'Tamamlandı',
     'OUTBOUND_REJECTED' => 'İptal / ret',
@@ -110,8 +112,8 @@ $operationRowClass = static function (array $row): string {
     $outboundCards = [
         ['Çıkış ön bildirimi bekleyen', (int) ($outboundProcessCounts['waiting'] ?? 0), 'Henüz başlamadı', 'warning', 'waiting'],
         ['1. tartım bekleyenler', (int) ($outboundProcessCounts['first_weigh_waiting'] ?? 0), 'Boş araç tartımı', 'danger', 'first_weigh_waiting'],
-        ['Yükleme alanına yönlendirme', (int) ($outboundProcessCounts['loading_waiting'] ?? 0), '1. tartım alındı', 'danger', 'loading_waiting'],
-        ['Yükleme alanında', (int) ($outboundProcessCounts['loading'] ?? 0), 'Silodan yükleme', 'danger', 'loading'],
+        ['Barkod basılan çıkışlar', (int) ($outboundProcessCounts['loading_waiting'] ?? 0), 'Doluma gönderilebilir', 'danger', 'loading_waiting'],
+        ['Dolum alanında', (int) ($outboundProcessCounts['loading'] ?? 0), 'Dolum bekliyor', 'danger', 'loading'],
         ['2. tartım bekleyenler', (int) ($outboundProcessCounts['second_waiting'] ?? 0), 'Dolu araç tartımı', 'danger', 'second_waiting'],
         ['Tamamlanan çıkışlar', (int) ($outboundProcessCounts['completed'] ?? 0), 'Kapandı', 'default', 'completed'],
     ];

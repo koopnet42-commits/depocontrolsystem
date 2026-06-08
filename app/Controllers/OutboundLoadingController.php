@@ -7,6 +7,7 @@ namespace App\Controllers;
 use App\Core\Controller;
 use App\Core\Database;
 use App\Services\AuditLogger;
+use App\Services\BarcodeService;
 use App\Services\OutboundProcessHistory;
 use App\Services\PlateReaderService;
 use App\Services\SenderPersonRegistry;
@@ -14,7 +15,10 @@ use PDO;
 
 final class OutboundLoadingController extends Controller
 {
-    public function __construct(private readonly PlateReaderService $plateReader = new PlateReaderService())
+    public function __construct(
+        private readonly PlateReaderService $plateReader = new PlateReaderService(),
+        private readonly BarcodeService $barcodeService = new BarcodeService(),
+    )
     {
     }
 
@@ -145,7 +149,7 @@ final class OutboundLoadingController extends Controller
         $record = $this->findRecord((int) $this->input('id'));
         $weight = $this->decimalInputOrNull('first_weight_kg');
 
-        if ($record === null || $weight === null || (float) $weight <= 0) {
+        if ($record === null || (string) ($record['status'] ?? '') !== 'OUTBOUND_ARRIVED' || $weight === null || (float) $weight <= 0) {
             $this->redirect($this->returnTo('invalid'));
         }
 
@@ -168,7 +172,7 @@ final class OutboundLoadingController extends Controller
             (int) $record['id'],
             (string) $record['status'],
             'OUTBOUND_FIRST_WEIGHED',
-            '1. tartım kaydedildi',
+            '1. tartım kaydedildi, çıkış barkodu basıldı',
             number_format((float) $weight, 0, ',', '.') . ' kg'
         );
 
@@ -183,8 +187,12 @@ final class OutboundLoadingController extends Controller
         $this->ensureSchema();
         $record = $this->findRecord((int) $this->input('id'));
 
-        if ($record === null || $record['first_weight_kg'] === null) {
+        if ($record === null || (string) ($record['status'] ?? '') !== 'OUTBOUND_FIRST_WEIGHED' || $record['first_weight_kg'] === null) {
             $this->redirect($this->returnTo('first_required'));
+        }
+
+        if (trim((string) ($record['outbound_barcode'] ?? '')) === '') {
+            $this->redirect($this->returnTo('barcode_required', (int) $record['id']));
         }
 
         $silo = $this->findSilo((int) $record['source_silo_id']);
@@ -202,14 +210,14 @@ final class OutboundLoadingController extends Controller
             (int) $record['id'],
             (string) $record['status'],
             'OUTBOUND_LOADING_ASSIGNED_TO_SILO',
-            'Yükleme alanına yönlendirildi',
+            'Barkodla doluma gönderildi',
             (string) ($silo['code'] ?? '') . ' - ' . (string) ($silo['name'] ?? '')
         );
 
         $this->redirect($this->returnTo('loading_assigned', (int) $record['id']));
     }
 
-    public function sendToSecondWeighing(): void
+    public function fillingDone(): void
     {
         $this->ensureSchema();
         $record = $this->findRecord((int) $this->input('id'));
@@ -218,14 +226,99 @@ final class OutboundLoadingController extends Controller
             $this->redirect($this->returnTo('invalid', $record !== null ? (int) $record['id'] : null));
         }
 
+        Database::connection()->prepare(
+            'UPDATE outbound_loadings
+             SET status = "OUTBOUND_ANALYSIS_PENDING",
+                 filling_completed_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = :id'
+        )->execute(['id' => (int) $record['id']]);
+
+        OutboundProcessHistory::record(
+            (int) $record['id'],
+            (string) $record['status'],
+            'OUTBOUND_ANALYSIS_PENDING',
+            'Dolum tamamlandı, analiz bekliyor',
+            trim((string) $this->input('note', '')) ?: null
+        );
+
+        $this->redirect($this->returnTo('filling_done', (int) $record['id']));
+    }
+
+    public function saveAnalysis(): void
+    {
+        $this->ensureSchema();
+        $record = $this->findRecord((int) $this->input('id'));
+
+        if ($record === null || (string) ($record['status'] ?? '') !== 'OUTBOUND_ANALYSIS_PENDING') {
+            $this->redirect($this->returnTo('invalid', $record !== null ? (int) $record['id'] : null));
+        }
+
+        $result = in_array((string) $this->input('analysis_result', 'accepted'), ['accepted', 'conditional', 'rejected'], true)
+            ? (string) $this->input('analysis_result', 'accepted')
+            : 'accepted';
+
+        Database::connection()->prepare(
+            'UPDATE outbound_loadings
+             SET analysis_result = :analysis_result,
+                 analysis_note = :analysis_note,
+                 analyzed_at = NOW(),
+                 status = :status,
+                 updated_at = NOW()
+             WHERE id = :id'
+        )->execute([
+            'id' => (int) $record['id'],
+            'analysis_result' => $result,
+            'analysis_note' => trim((string) $this->input('analysis_note', '')) ?: null,
+            'status' => $result === 'rejected' ? 'OUTBOUND_REJECTED' : 'OUTBOUND_ANALYSIS_DONE',
+        ]);
+
+        OutboundProcessHistory::record(
+            (int) $record['id'],
+            (string) $record['status'],
+            $result === 'rejected' ? 'OUTBOUND_REJECTED' : 'OUTBOUND_ANALYSIS_DONE',
+            $result === 'rejected' ? 'Çıkış analizi reddedildi' : 'Çıkış analizi tamamlandı',
+            trim((string) $this->input('analysis_note', '')) ?: null
+        );
+
+        $this->redirect($this->returnTo($result === 'rejected' ? 'analysis_rejected' : 'analysis_done', (int) $record['id']));
+    }
+
+    public function sendToSecondWeighing(): void
+    {
+        $this->ensureSchema();
+        $record = $this->findRecord((int) $this->input('id'));
+
+        if ($record === null || (string) ($record['status'] ?? '') !== 'OUTBOUND_ANALYSIS_DONE') {
+            $this->redirect($this->returnTo('invalid', $record !== null ? (int) $record['id'] : null));
+        }
+
         OutboundProcessHistory::changeStatus(
             (int) $record['id'],
             'OUTBOUND_SECOND_WEIGHING_WAITING',
             '2. tartıma yönlendirildi',
-            'Yükleme tamamlandı, dolu araç 2. tartıma alınacak'
+            'Analiz tamamlandı, dolu araç 2. tartıma alınacak'
         );
 
         $this->redirect('/second-weighing?outbound_id=' . (int) $record['id']);
+    }
+
+    public function barcodePrint(): void
+    {
+        $this->ensureSchema();
+        $record = $this->findRecord((int) $this->input('id'));
+
+        if ($record === null || trim((string) ($record['outbound_barcode'] ?? '')) === '') {
+            http_response_code(404);
+            echo 'Çıkış barkodu bulunamadı.';
+            return;
+        }
+
+        $this->view('outbound_loadings/barcode_print', [
+            'title' => 'Çıkış Barkodu',
+            'record' => $record,
+            'barcodeSvg' => $this->barcodeService->svg((string) $record['outbound_barcode']),
+        ]);
     }
 
     public function cancel(): void
@@ -261,8 +354,9 @@ final class OutboundLoadingController extends Controller
         }
 
         if ((string) $this->input('return_to', '') === 'product_operations_entry') {
+            $next = in_array($message, ['created_to_weighbridge', 'started_to_weighbridge'], true) ? '&next=weighbridge' : '';
             return '/product-operations/entry?mode=outbound&message=' . urlencode($message)
-                . ($id !== null ? '&outbound_id=' . $id . '&focus=outbound-' . $id . '&next=weighbridge' : '');
+                . ($id !== null ? '&outbound_id=' . $id . '&focus=outbound-' . $id . $next : '');
         }
 
         return '/outbound-loadings?message=' . urlencode($message)
@@ -429,6 +523,12 @@ final class OutboundLoadingController extends Controller
                 net_quantity_kg REAL NULL,
                 status TEXT NOT NULL,
                 assigned_at TEXT NULL,
+                outbound_barcode TEXT NULL,
+                outbound_barcode_issued_at TEXT NULL,
+                filling_completed_at TEXT NULL,
+                analysis_result TEXT NULL,
+                analysis_note TEXT NULL,
+                analyzed_at TEXT NULL,
                 completed_at TEXT NULL,
                 note TEXT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -446,6 +546,10 @@ final class OutboundLoadingController extends Controller
             'sender_address' => 'TEXT NULL',
             'outbound_barcode' => 'TEXT NULL',
             'outbound_barcode_issued_at' => 'TEXT NULL',
+            'filling_completed_at' => 'TEXT NULL',
+            'analysis_result' => 'TEXT NULL',
+            'analysis_note' => 'TEXT NULL',
+            'analyzed_at' => 'TEXT NULL',
         ] as $column => $definition) {
             if (! in_array($column, $columns, true)) {
                 $database->exec('ALTER TABLE outbound_loadings ADD COLUMN ' . $column . ' ' . $definition);

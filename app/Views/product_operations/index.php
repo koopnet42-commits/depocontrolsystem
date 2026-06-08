@@ -159,6 +159,8 @@ $outboundActiveStatuses = [
     'OUTBOUND_ARRIVED',
     'OUTBOUND_FIRST_WEIGHED',
     'OUTBOUND_LOADING_ASSIGNED_TO_SILO',
+    'OUTBOUND_ANALYSIS_PENDING',
+    'OUTBOUND_ANALYSIS_DONE',
     'OUTBOUND_SECOND_WEIGHING_WAITING',
 ];
 $outboundPreEntries = array_values(array_filter($outboundRecords ?? [], static fn (array $row): bool => in_array((string) ($row['status'] ?? ''), $outboundWaitingStatuses, true)));
@@ -175,8 +177,16 @@ $outboundStageLabel = static function (string $status): string {
         return '1. Tartım';
     }
 
-    if (in_array($status, ['OUTBOUND_FIRST_WEIGHED', 'OUTBOUND_LOADING_ASSIGNED_TO_SILO'], true)) {
-        return 'Yükleme';
+    if ($status === 'OUTBOUND_FIRST_WEIGHED') {
+        return 'Barkod';
+    }
+
+    if ($status === 'OUTBOUND_LOADING_ASSIGNED_TO_SILO') {
+        return 'Dolum';
+    }
+
+    if (in_array($status, ['OUTBOUND_ANALYSIS_PENDING', 'OUTBOUND_ANALYSIS_DONE'], true)) {
+        return 'Analiz';
     }
 
     if ($status === 'OUTBOUND_SECOND_WEIGHING_WAITING') {
@@ -241,20 +251,26 @@ $messages = [
     'note_added' => ['alert--success', 'Not kaydedildi.'],
     'created' => ['alert--success', 'Ürün çıkışı kaydı oluşturuldu.'],
     'created_to_weighbridge' => ['alert--success', 'Ürün çıkışı kaydı oluşturuldu. Araç kantar ekranına aktarıldı.'],
-    'first_saved' => ['alert--success', 'Ürün çıkışı 1. tartımı kaydedildi.'],
+    'first_saved' => ['alert--success', 'Ürün çıkışı 1. tartımı kaydedildi ve çıkış barkodu basıldı.'],
     'first_required' => ['alert--danger', 'Önce ürün çıkışı 1. tartımı kaydedilmelidir.'],
+    'barcode_required' => ['alert--danger', 'Doluma göndermek için önce çıkış barkodu basılmalıdır.'],
     'silo_mismatch' => ['alert--danger', 'Seçilen silo ürün tipiyle uyumlu değil.'],
     'started' => ['alert--success', 'Çıkış ön bildirimi sürece aktarıldı. 1. tartım bekleniyor.'],
     'started_to_weighbridge' => ['alert--success', 'Çıkış ön bildirimi sürece aktarıldı. Araç kantar ekranına aktarıldı.'],
     'saved_to_weighbridge' => ['alert--success', 'Araç kaydı oluşturuldu. Araç kantar ekranına aktarıldı.'],
     'transferred_to_weighbridge' => ['alert--success', 'Ön bildirim akışa alındı. Araç kantar ekranına aktarıldı.'],
-    'loading_assigned' => ['alert--success', 'Araç yükleme alanına yönlendirildi.'],
+    'loading_assigned' => ['alert--success', 'Araç barkodla doluma gönderildi.'],
+    'filling_done' => ['alert--success', 'Dolum tamamlandı. Araç analiz bekliyor.'],
+    'analysis_done' => ['alert--success', 'Analiz tamamlandı. Araç 2. tartıma gönderilebilir.'],
+    'analysis_rejected' => ['alert--danger', 'Analiz sonucu ret olarak kaydedildi. Çıkış süreci kapatıldı.'],
 ];
 $outboundStatusLabel = static fn (string $status): string => [
     'OUTBOUND_PRE_NOTIFIED' => 'Çıkış ön bildirimi',
     'OUTBOUND_ARRIVED' => 'Araç geldi',
-    'OUTBOUND_FIRST_WEIGHED' => '1. tartım alındı',
-    'OUTBOUND_LOADING_ASSIGNED_TO_SILO' => 'Siloya yönlendirildi',
+    'OUTBOUND_FIRST_WEIGHED' => 'Barkod basıldı',
+    'OUTBOUND_LOADING_ASSIGNED_TO_SILO' => 'Doluma gönderildi',
+    'OUTBOUND_ANALYSIS_PENDING' => 'Dolum tamamlandı / analiz bekliyor',
+    'OUTBOUND_ANALYSIS_DONE' => 'Analiz tamamlandı',
     'OUTBOUND_SECOND_WEIGHING_WAITING' => '2. tartım bekliyor',
     'OUTBOUND_SECOND_WEIGHED' => '2. tartım alındı',
     'OUTBOUND_COMPLETED' => 'Tamamlandı',
@@ -466,6 +482,7 @@ $flowNavigationPermissionsJson = json_encode([
                             <a class="button button--primary button--outbound" href="/weighbridge-entry?outbound_id=<?= (int) $selectedOutboundRecord['id'] ?>&focus=outbound-<?= (int) $selectedOutboundRecord['id'] ?>#outbound-first-weighing">Kantar Ekranına Git</a>
                         <?php endif; ?>
                         <?php if ($selectedOutboundStatus === 'OUTBOUND_FIRST_WEIGHED'): ?>
+                            <a class="button button--small button--outbound" target="_blank" href="/outbound-loadings/barcode-print?id=<?= (int) $selectedOutboundRecord['id'] ?>">Barkodu Yazdır</a>
                             <form action="/outbound-loadings/assign-silo" method="post">
                                 <input type="hidden" name="return_to" value="product_operations_entry">
                                 <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['id'] ?>">
@@ -473,6 +490,22 @@ $flowNavigationPermissionsJson = json_encode([
                             </form>
                         <?php endif; ?>
                         <?php if ($selectedOutboundStatus === 'OUTBOUND_LOADING_ASSIGNED_TO_SILO'): ?>
+                            <form action="/outbound-loadings/filling-done" method="post">
+                                <input type="hidden" name="return_to" value="product_operations_entry">
+                                <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['id'] ?>">
+                                <button class="button button--primary button--outbound" type="submit">Dolum Tamamlandı</button>
+                            </form>
+                        <?php endif; ?>
+                        <?php if ($selectedOutboundStatus === 'OUTBOUND_ANALYSIS_PENDING'): ?>
+                            <form action="/outbound-loadings/save-analysis" method="post" class="form-grid form-grid--section">
+                                <input type="hidden" name="return_to" value="product_operations_entry">
+                                <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['id'] ?>">
+                                <label class="field"><span>Analiz sonucu</span><select name="analysis_result"><option value="accepted">Uygun</option><option value="conditional">Şartlı uygun</option><option value="rejected">Ret</option></select></label>
+                                <label class="field"><span>Analiz notu</span><input type="text" name="analysis_note" placeholder="Dolum sonrası analiz notu"></label>
+                                <button class="button button--primary button--outbound" type="submit">Analizi Kaydet</button>
+                            </form>
+                        <?php endif; ?>
+                        <?php if ($selectedOutboundStatus === 'OUTBOUND_ANALYSIS_DONE'): ?>
                             <form action="/outbound-loadings/send-to-second-weighing" method="post">
                                 <input type="hidden" name="return_to" value="product_operations_entry">
                                 <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['id'] ?>">
@@ -557,7 +590,8 @@ $flowNavigationPermissionsJson = json_encode([
                             </div>
                             <div class="process-card__flow process-card__flow--outbound">
                                 <span class="<?= $outboundStage === '1. Tartım' ? 'is-current' : '' ?>">1. Tartım</span>
-                                <span class="<?= $outboundStage === 'Yükleme' ? 'is-current' : '' ?>">Yükleme</span>
+                                <span class="<?= in_array($outboundStage, ['Barkod', 'Dolum'], true) ? 'is-current' : '' ?>">Dolum</span>
+                                <span class="<?= $outboundStage === 'Analiz' ? 'is-current' : '' ?>">Analiz</span>
                                 <span class="<?= $outboundStage === '2. Tartım' ? 'is-current' : '' ?>">2. Tartım</span>
                             </div>
                             <div class="process-card__actions">

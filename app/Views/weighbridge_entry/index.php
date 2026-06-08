@@ -18,7 +18,7 @@ $alerts = [
     'rollback_weight_locked' => ['alert--danger', 'Bu araç için 1. tartım kaydedilmiş. Geri alma işlemi sadece yetkili kullanıcı tarafından yapılabilir.'],
     'rollback_failed' => ['alert--danger', 'Kantar geri alma işlemi tamamlanamadı. Lütfen tekrar deneyin.'],
     'invalid' => ['alert--danger', 'Formdaki hatalı alanları kontrol edin.'],
-    'outbound_first_saved' => ['alert--success', 'Çıkış 1. tartımı kaydedildi. Araç yükleme adımına aktarıldı.'],
+    'outbound_first_saved' => ['alert--success', 'Çıkış 1. tartımı kaydedildi ve çıkış barkodu basıldı.'],
     'loading_assigned' => ['alert--success', 'Çıkış barkodu üretildi ve araç dolum/yükleme alanına yönlendirildi.'],
 ];
 $formatKg = static fn (mixed $kg): string => number_format((float) $kg, 0, ',', '.') . ' kg';
@@ -174,6 +174,7 @@ $outboundFirstWeighingWaiting = $outboundFirstWeighingWaiting ?? [];
                 <button class="button button--primary button--outbound" type="submit">1. Tartımı Yap</button>
             </form>
         <?php else: ?>
+            <a class="button button--small button--outbound" target="_blank" href="/outbound-loadings/barcode-print?id=<?= (int) $selectedOutboundRecord['outbound_id'] ?>">Barkodu Yazdır</a>
             <form action="/outbound-loadings/assign-silo" method="post" class="operation-row">
                 <input type="hidden" name="return_to" value="weighbridge_entry">
                 <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['outbound_id'] ?>">

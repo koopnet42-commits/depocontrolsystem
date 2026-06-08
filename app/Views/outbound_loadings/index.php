@@ -6,9 +6,14 @@ $alerts = [
     'created' => ['alert--success', 'Ürün çıkışı kaydı oluşturuldu.'],
     'created_to_weighbridge' => ['alert--success', 'Ürün çıkışı kaydı oluşturuldu. Araç kantar ekranına aktarıldı.'],
     'started_to_weighbridge' => ['alert--success', 'Çıkış ön bildirimi sürece aktarıldı. Araç kantar ekranına aktarıldı.'],
-    'first_saved' => ['alert--success', '1. tartım kaydedildi. Araç boş ağırlığı alındı.'],
+    'first_saved' => ['alert--success', '1. tartım kaydedildi ve çıkış barkodu basıldı.'],
     'first_required' => ['alert--danger', 'Önce 1. tartım kaydedilmelidir.'],
+    'barcode_required' => ['alert--danger', 'Doluma göndermek için önce çıkış barkodu basılmalıdır.'],
     'silo_mismatch' => ['alert--danger', 'Seçilen silo ürün tipiyle uyumlu değil.'],
+    'loading_assigned' => ['alert--success', 'Araç barkodla doluma gönderildi.'],
+    'filling_done' => ['alert--success', 'Dolum tamamlandı. Araç analiz bekliyor.'],
+    'analysis_done' => ['alert--success', 'Analiz tamamlandı. Araç 2. tartıma gönderilebilir.'],
+    'analysis_rejected' => ['alert--danger', 'Analiz sonucu ret olarak kaydedildi. Çıkış süreci kapatıldı.'],
     'cancelled' => ['alert--success', 'Ürün çıkışı kaydı iptal edildi.'],
     'invalid' => ['alert--danger', 'Formdaki alanları kontrol edin.'],
 ];
@@ -18,8 +23,10 @@ $formatTon = static fn (mixed $kg): string => number_format(((float) $kg) / 1000
 $statusLabel = static fn (string $status): string => [
     'OUTBOUND_PRE_NOTIFIED' => 'Ön bildirildi',
     'OUTBOUND_ARRIVED' => 'Araç geldi',
-    'OUTBOUND_FIRST_WEIGHED' => '1. tartım alındı',
-    'OUTBOUND_LOADING_ASSIGNED_TO_SILO' => 'Siloya yönlendirildi',
+    'OUTBOUND_FIRST_WEIGHED' => 'Barkod basıldı',
+    'OUTBOUND_LOADING_ASSIGNED_TO_SILO' => 'Doluma gönderildi',
+    'OUTBOUND_ANALYSIS_PENDING' => 'Dolum tamamlandı / analiz bekliyor',
+    'OUTBOUND_ANALYSIS_DONE' => 'Analiz tamamlandı',
     'OUTBOUND_SECOND_WEIGHING_WAITING' => '2. tartım bekliyor',
     'OUTBOUND_SECOND_WEIGHED' => '2. tartım alındı',
     'OUTBOUND_COMPLETED' => 'Tamamlandı',
@@ -138,12 +145,27 @@ $validationJson = json_encode($validation, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG
                 <a class="button button--primary button--outbound" href="/weighbridge-entry?outbound_id=<?= (int) $selectedRecord['id'] ?>&focus=outbound-<?= (int) $selectedRecord['id'] ?>#outbound-first-weighing">Kantar Ekranına Git</a>
             <?php endif; ?>
             <?php if ($selectedStatus === 'OUTBOUND_FIRST_WEIGHED'): ?>
+                <a class="button button--small button--outbound" target="_blank" href="/outbound-loadings/barcode-print?id=<?= (int) $selectedRecord['id'] ?>">Barkodu Yazdır</a>
                 <form action="/outbound-loadings/assign-silo" method="post">
                     <input type="hidden" name="id" value="<?= (int) $selectedRecord['id'] ?>">
                     <button class="button button--primary button--outbound" type="submit">Barkodla Doluma Gönder</button>
                 </form>
             <?php endif; ?>
             <?php if ($selectedStatus === 'OUTBOUND_LOADING_ASSIGNED_TO_SILO'): ?>
+                <form action="/outbound-loadings/filling-done" method="post">
+                    <input type="hidden" name="id" value="<?= (int) $selectedRecord['id'] ?>">
+                    <button class="button button--primary button--outbound" type="submit">Dolum Tamamlandı</button>
+                </form>
+            <?php endif; ?>
+            <?php if ($selectedStatus === 'OUTBOUND_ANALYSIS_PENDING'): ?>
+                <form action="/outbound-loadings/save-analysis" method="post" class="form-grid form-grid--section">
+                    <input type="hidden" name="id" value="<?= (int) $selectedRecord['id'] ?>">
+                    <label class="field"><span>Analiz sonucu</span><select name="analysis_result"><option value="accepted">Uygun</option><option value="conditional">Şartlı uygun</option><option value="rejected">Ret</option></select></label>
+                    <label class="field"><span>Analiz notu</span><input type="text" name="analysis_note" placeholder="Dolum sonrası analiz notu"></label>
+                    <button class="button button--primary button--outbound" type="submit">Analizi Kaydet</button>
+                </form>
+            <?php endif; ?>
+            <?php if ($selectedStatus === 'OUTBOUND_ANALYSIS_DONE'): ?>
                 <form action="/outbound-loadings/send-to-second-weighing" method="post">
                     <input type="hidden" name="id" value="<?= (int) $selectedRecord['id'] ?>">
                     <button class="button button--primary button--outbound" type="submit">2. Tartıma Gönder</button>

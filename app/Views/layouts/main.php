@@ -786,20 +786,24 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
         const outboundLabels = {
             OUTBOUND_PRE_NOTIFIED: 'Çıkış ön bildirimi',
             OUTBOUND_ARRIVED: '1. tartım bekliyor',
-            OUTBOUND_FIRST_WEIGHED: 'Yükleme alanına yönlendirme bekliyor',
-            OUTBOUND_LOADING_ASSIGNED_TO_SILO: 'Yükleme alanına yönlendirildi',
+            OUTBOUND_FIRST_WEIGHED: 'Barkod basıldı, doluma gönderme bekliyor',
+            OUTBOUND_LOADING_ASSIGNED_TO_SILO: 'Doluma gönderildi',
+            OUTBOUND_ANALYSIS_PENDING: 'Dolum tamamlandı, analiz bekliyor',
+            OUTBOUND_ANALYSIS_DONE: 'Analiz tamamlandı',
             OUTBOUND_SECOND_WEIGHING_WAITING: '2. tartım bekliyor',
             OUTBOUND_COMPLETED: 'Tamamlandı',
             OUTBOUND_REJECTED: 'İptal / ret',
         };
-        const outboundFlowSteps = ['Ön Bildirim', '1. Tartım', 'Yükleme', '2. Tartım', 'Tamamlandı'];
+        const outboundFlowSteps = ['Ön Bildirim', '1. Tartım', 'Barkod', 'Dolum', 'Analiz', '2. Tartım', 'Tamamlandı'];
         const outboundStepIndex = (status) => ({
             OUTBOUND_PRE_NOTIFIED: 0,
             OUTBOUND_ARRIVED: 1,
             OUTBOUND_FIRST_WEIGHED: 2,
-            OUTBOUND_LOADING_ASSIGNED_TO_SILO: 2,
-            OUTBOUND_SECOND_WEIGHING_WAITING: 3,
-            OUTBOUND_COMPLETED: 4,
+            OUTBOUND_LOADING_ASSIGNED_TO_SILO: 3,
+            OUTBOUND_ANALYSIS_PENDING: 4,
+            OUTBOUND_ANALYSIS_DONE: 4,
+            OUTBOUND_SECOND_WEIGHING_WAITING: 5,
+            OUTBOUND_COMPLETED: 6,
             OUTBOUND_REJECTED: 1,
         }[status] ?? 0);
 

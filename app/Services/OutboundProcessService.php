@@ -14,6 +14,8 @@ final class OutboundProcessService
         'first_weigh_waiting' => ['OUTBOUND_ARRIVED'],
         'loading_waiting' => ['OUTBOUND_FIRST_WEIGHED'],
         'loading' => ['OUTBOUND_LOADING_ASSIGNED_TO_SILO'],
+        'analysis_waiting' => ['OUTBOUND_ANALYSIS_PENDING'],
+        'analysis_done' => ['OUTBOUND_ANALYSIS_DONE'],
         'second_waiting' => ['OUTBOUND_SECOND_WEIGHING_WAITING'],
         'completed' => ['OUTBOUND_COMPLETED'],
         'rejected' => ['OUTBOUND_REJECTED'],
@@ -22,8 +24,10 @@ final class OutboundProcessService
     public const STATUS_LABELS = [
         'OUTBOUND_PRE_NOTIFIED' => 'Çıkış ön bildirimi',
         'OUTBOUND_ARRIVED' => '1. tartım bekliyor',
-        'OUTBOUND_FIRST_WEIGHED' => 'Yükleme alanına yönlendirme bekliyor',
-        'OUTBOUND_LOADING_ASSIGNED_TO_SILO' => 'Yükleme alanına yönlendirildi',
+        'OUTBOUND_FIRST_WEIGHED' => 'Barkod basıldı, doluma gönderme bekliyor',
+        'OUTBOUND_LOADING_ASSIGNED_TO_SILO' => 'Doluma gönderildi',
+        'OUTBOUND_ANALYSIS_PENDING' => 'Dolum tamamlandı, analiz bekliyor',
+        'OUTBOUND_ANALYSIS_DONE' => 'Analiz tamamlandı, 2. tartım bekliyor',
         'OUTBOUND_SECOND_WEIGHING_WAITING' => '2. tartım bekliyor',
         'OUTBOUND_SECOND_WEIGHED' => '2. tartım alındı',
         'OUTBOUND_COMPLETED' => 'Tamamlandı',
@@ -102,6 +106,8 @@ final class OutboundProcessService
             'OUTBOUND_ARRIVED',
             'OUTBOUND_FIRST_WEIGHED',
             'OUTBOUND_LOADING_ASSIGNED_TO_SILO',
+            'OUTBOUND_ANALYSIS_PENDING',
+            'OUTBOUND_ANALYSIS_DONE',
             'OUTBOUND_SECOND_WEIGHING_WAITING',
         ], $limit);
     }
@@ -140,6 +146,10 @@ final class OutboundProcessService
                 ol.net_quantity_kg,
                 ol.outbound_barcode,
                 ol.outbound_barcode_issued_at,
+                ol.filling_completed_at,
+                ol.analysis_result,
+                ol.analysis_note,
+                ol.analyzed_at,
                 ol.assigned_at,
                 ol.sender_type,
                 ol.sender_name,
@@ -162,6 +172,10 @@ final class OutboundProcessService
         foreach ([
             'outbound_barcode' => 'TEXT NULL',
             'outbound_barcode_issued_at' => 'TEXT NULL',
+            'filling_completed_at' => 'TEXT NULL',
+            'analysis_result' => 'TEXT NULL',
+            'analysis_note' => 'TEXT NULL',
+            'analyzed_at' => 'TEXT NULL',
         ] as $column => $definition) {
             if (! in_array($column, $columns, true)) {
                 $database->exec('ALTER TABLE outbound_loadings ADD COLUMN ' . $column . ' ' . $definition);
