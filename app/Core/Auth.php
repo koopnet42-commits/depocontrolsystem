@@ -150,6 +150,13 @@ final class Auth
             return self::can('dashboard');
         }
 
+        if ($path === '/sender-records' || str_starts_with($path, '/sender-records/')) {
+            return self::can('admin.delivery')
+                || self::can('delivery.direct-entry')
+                || self::can('weighbridge.entry')
+                || self::can('unloading');
+        }
+
         foreach (self::ROUTE_PERMISSIONS as $prefix => $permission) {
             if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
                 return self::can($permission);

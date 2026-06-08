@@ -16,12 +16,15 @@ $companyJson = json_encode($companies, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | J
 $personJson = json_encode($personSenders ?? [], JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT);
 $alerts = [
     'active_plate_exists' => ['alert--danger', 'Bu plaka için aktif bir süreç zaten var. Mevcut işlem tamamlanmadan yeni ön bildirim açılamaz.'],
-    'invalid' => ['alert--danger', 'Kayıt oluşturulmadı. Firma ürününde firma adı ve irsaliye; şahıs ürününde ad soyad ve 11 haneli TC zorunludur. Ürün ve plaka da boş olamaz.'],
+    'invalid' => ['alert--danger', 'Kayıt oluşturulmadı. Firma ürününde firma adı; şahıs ürününde ad soyad ve 11 haneli TC zorunludur. Ürün ve plaka da boş olamaz. İrsaliye ön bildirimde boş bırakılabilir.'],
 ];
 $alert = $alerts[$message ?? ''] ?? null;
 $validation = $validation ?? ['errors' => [], 'old' => [], 'general' => null];
 $fieldError = static fn (string $field): string => isset($validation['errors'][$field]) ? '<small class="field-error">' . htmlspecialchars((string) $validation['errors'][$field]) . '</small>' : '';
 $fieldClass = static fn (string $field): string => isset($validation['errors'][$field]) ? ' field--error' : '';
+$returnTo = (string) ($_GET['return_to'] ?? ($validation['old']['return_to'] ?? ''));
+$vehicleStep = (string) ($_GET['vehicle_step'] ?? ($validation['old']['vehicle_step'] ?? '0'));
+$isEditing = ! empty($notification['id']);
 ?>
 <header class="page-header">
     <div>
@@ -34,11 +37,19 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
 <?php if ($alert !== null): ?>
     <div class="alert <?= htmlspecialchars($alert[0]) ?>"><?= htmlspecialchars($alert[1]) ?></div>
 <?php endif; ?>
+<?php if (! empty($validation['general'])): ?>
+    <div class="alert alert--danger"><?= htmlspecialchars((string) $validation['general']) ?></div>
+<?php endif; ?>
 
 <section class="panel panel--form panel--wide-form">
     <form action="<?= htmlspecialchars($action) ?>" method="post" class="form-grid" data-driver-vehicle-form>
         <?php if (! empty($notification['id'])): ?>
             <input type="hidden" name="id" value="<?= (int) $notification['id'] ?>">
+        <?php endif; ?>
+        <input type="hidden" name="operation_type" value="<?= htmlspecialchars((string) ($notification['operation_type'] ?? 'PRODUCT_IN')) ?>">
+        <?php if ($returnTo !== ''): ?>
+            <input type="hidden" name="return_to" value="<?= htmlspecialchars($returnTo) ?>">
+            <input type="hidden" name="vehicle_step" value="<?= htmlspecialchars($vehicleStep) ?>">
         <?php endif; ?>
 
         <div class="field field--wide">
@@ -69,7 +80,7 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
             <?= $fieldError('company_name') ?>
         </label>
 
-        <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye numarası</span><input type="text" name="dispatch_number" value="<?= htmlspecialchars((string) ($notification['dispatch_number'] ?? '')) ?>"><?= $fieldError('dispatch_number') ?></label>
+        <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye numarası (varsa)</span><input type="text" name="dispatch_number" value="<?= htmlspecialchars((string) ($notification['dispatch_number'] ?? '')) ?>"><?= $fieldError('dispatch_number') ?></label>
         <label class="field sender-company"><span>Vergi no</span><input type="text" name="sender_tax_number" value="<?= htmlspecialchars((string) ($notification['sender_tax_number'] ?? '')) ?>"></label>
         <label class="field sender-person<?= $fieldClass('sender_name') ?>" hidden>
             <span>Ad soyad ara / yaz</span>
@@ -179,9 +190,18 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
             <textarea name="notes" rows="4"><?= htmlspecialchars((string) ($notification['notes'] ?? '')) ?></textarea>
         </label>
 
+        <?php if ($isEditing): ?>
+            <label class="field field--wide<?= $fieldClass('correction_note') ?>">
+                <span>Düzeltme açıklaması</span>
+                <textarea name="correction_note" rows="3" placeholder="Örn: Ürün tipi yanlış seçilmişti, operatör düzeltmesi yapıldı."><?= htmlspecialchars((string) ($validation['old']['correction_note'] ?? '')) ?></textarea>
+                <small class="field-help">Süreç başlamış kayıtlarda ürün, firma, plaka veya miktar değişirse açıklama zorunludur.</small>
+                <?= $fieldError('correction_note') ?>
+            </label>
+        <?php endif; ?>
+
         <div class="form-actions">
             <button class="button button--primary" type="submit">Kaydet</button>
-            <a class="button button--ghost" href="/delivery-notifications">Vazgeç</a>
+            <a class="button button--ghost" href="<?= $returnTo === 'vehicle_process' && $isEditing ? '/dashboard?entry_id=' . (int) $notification['id'] . '&vehicle_step=' . urlencode($vehicleStep) . '&process_focus=1' : '/delivery-notifications' ?>">Vazgeç</a>
         </div>
     </form>
 </section>
@@ -200,7 +220,7 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
             el.hidden = type !== 'company';
             el.querySelectorAll('input, select, textarea').forEach((field) => {
                 field.disabled = type !== 'company';
-                field.required = type === 'company' && ['company_id', 'dispatch_number'].includes(field.name);
+                field.required = type === 'company' && field.name === 'company_id';
             });
         });
         document.querySelectorAll('.sender-person').forEach((el) => {
@@ -233,6 +253,100 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
     const phoneInput = document.querySelector('input[name="sender_phone"]');
     const companyHelp = document.getElementById('company-match-help');
     const personHelp = document.getElementById('person-match-help');
+    const mainForm = document.querySelector('[data-driver-vehicle-form]');
+
+    function setSafe(field, value, force = false) {
+        if (!field) return;
+        const next = value || '';
+        const previousAuto = field.dataset.autoFillValue || '';
+        if (force || field.value.trim() === '' || field.value === previousAuto) {
+            field.value = next;
+            field.dataset.autoFillValue = next;
+        }
+    }
+
+    function appendCompanyOption(record) {
+        if (!record?.name) return;
+        if (!companyOptions.some((company) => String(company.id || '') === String(record.id || '') || normalizeText(company.name) === normalizeText(record.name))) {
+            companyOptions.push(record);
+        }
+        const list = document.getElementById('company-suggestions');
+        if (list && !Array.from(list.options).some((option) => normalizeText(option.value) === normalizeText(record.name))) {
+            const option = document.createElement('option');
+            option.value = record.name;
+            list.appendChild(option);
+        }
+    }
+
+    function appendPersonOption(record) {
+        if (!record?.sender_name) return;
+        if (!personOptions.some((person) => normalizeText(person.sender_name) === normalizeText(record.sender_name))) {
+            personOptions.push(record);
+        }
+        const list = document.getElementById('person-suggestions');
+        if (list && !Array.from(list.options).some((option) => normalizeText(option.value) === normalizeText(record.sender_name))) {
+            const option = document.createElement('option');
+            option.value = record.sender_name;
+            list.appendChild(option);
+        }
+    }
+
+    function openCompanyRecord() {
+        const typed = companyInput?.value.trim() || '';
+        if (typed === '' || companyOptions.some((company) => normalizeText(company.name) === normalizeText(typed))) return;
+        if (mainForm?.dataset.senderRecordModal === '1') return;
+        if (mainForm) mainForm.dataset.senderRecordModal = '1';
+        window.openSenderRecordModal?.({
+            type: 'company',
+            initial: {
+                company_name: typed,
+                sender_tax_number: taxInput?.value || '',
+                sender_phone: phoneInput?.value || '',
+                sender_address: addressInput?.value || '',
+            },
+            onSaved: (record) => {
+                appendCompanyOption(record);
+                setSafe(companyInput, record.name, true);
+                setSafe(companyIdInput, record.id, true);
+                setSafe(taxInput, record.tax_number || '', true);
+                setSafe(phoneInput, record.phone || '', true);
+                setSafe(addressInput, record.address || '', true);
+                if (companyHelp) companyHelp.textContent = 'Yeni firma kaydedildi ve forma aktarıldı.';
+                if (mainForm) delete mainForm.dataset.senderRecordModal;
+            },
+        });
+        window.setTimeout(() => {
+            if (mainForm) delete mainForm.dataset.senderRecordModal;
+        }, 400);
+    }
+
+    function openPersonRecord() {
+        const typed = senderNameInput?.value.trim() || '';
+        if (typed === '' || personOptions.some((person) => normalizeText(person.sender_name) === normalizeText(typed))) return;
+        if (mainForm?.dataset.senderRecordModal === '1') return;
+        if (mainForm) mainForm.dataset.senderRecordModal = '1';
+        window.openSenderRecordModal?.({
+            type: 'person',
+            initial: {
+                sender_name: typed,
+                identity_number: identityInput?.value || '',
+                sender_phone: phoneInput?.value || '',
+                sender_address: addressInput?.value || '',
+            },
+            onSaved: (record) => {
+                appendPersonOption(record);
+                setSafe(senderNameInput, record.sender_name, true);
+                setSafe(identityInput, record.identity_number || '', true);
+                setSafe(phoneInput, record.sender_phone || '', true);
+                setSafe(addressInput, record.sender_address || '', true);
+                if (personHelp) personHelp.textContent = 'Yeni şahıs kaydedildi ve forma aktarıldı.';
+                if (mainForm) delete mainForm.dataset.senderRecordModal;
+            },
+        });
+        window.setTimeout(() => {
+            if (mainForm) delete mainForm.dataset.senderRecordModal;
+        }, 400);
+    }
 
     function syncCompanyFields() {
         const typed = normalizeText(companyInput?.value);
@@ -240,16 +354,16 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
 
         if (match) {
             companyIdInput.value = match.id || '';
-            taxInput.value = match.tax_number || '';
-            addressInput.value = match.address || '';
-            phoneInput.value = match.phone || '';
+            setSafe(taxInput, match.tax_number || '');
+            setSafe(addressInput, match.address || '');
+            setSafe(phoneInput, match.phone || '');
             companyHelp.textContent = 'Mevcut firma seçildi. Bilgiler firma kartından getirildi.';
             return;
         }
 
         companyIdInput.value = '';
         if (companyInput?.value.trim()) {
-            companyHelp.textContent = 'Firma bulunamadı. Kaydedince yeni firma kaydı otomatik oluşturulacak.';
+            companyHelp.textContent = 'Firma bulunamadı. Alandan çıkınca yeni firma kaydı penceresi açılır.';
         } else {
             companyHelp.textContent = 'Firma adı yazıldığında mevcut kayıtlar önerilir.';
         }
@@ -260,22 +374,24 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
         const match = personOptions.find((person) => normalizeText(person.sender_name) === typed);
 
         if (match) {
-            identityInput.value = match.identity_number || '';
-            phoneInput.value = match.sender_phone || '';
-            addressInput.value = match.sender_address || '';
+            setSafe(identityInput, match.identity_number || '');
+            setSafe(phoneInput, match.sender_phone || '');
+            setSafe(addressInput, match.sender_address || '');
             personHelp.textContent = 'Mevcut şahıs bilgileri getirildi.';
             return;
         }
 
         if (senderNameInput?.value.trim()) {
-            personHelp.textContent = 'Şahıs bulunamadı. Kaydedince bu bildirimde yeni şahıs bilgisi oluşacak.';
+            personHelp.textContent = 'Şahıs bulunamadı. Alandan çıkınca yeni şahıs kaydı penceresi açılır.';
         } else {
             personHelp.textContent = 'Daha önce gelen şahıslar yazarken önerilir.';
         }
     }
 
     companyInput?.addEventListener('input', syncCompanyFields);
+    companyInput?.addEventListener('blur', openCompanyRecord);
     senderNameInput?.addEventListener('input', syncPersonFields);
+    senderNameInput?.addEventListener('blur', openPersonRecord);
     identityInput?.addEventListener('input', () => {
         identityInput.value = identityInput.value.replace(/\D+/g, '').slice(0, 11);
     });

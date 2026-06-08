@@ -6,7 +6,7 @@ $alerts = [
     'not_found' => ['alert--danger', 'Kantar girişine uygun araç bulunamadı.'],
     'plate_invalid' => ['alert--danger', 'Plaka formatı geçersiz. Örnek: 34 ABC 123.'],
     'weighbridge_busy' => ['alert--danger', 'Kantarda işlemde olan araç var. Yeni araç alınamaz.'],
-    'barrier_required' => ['alert--danger', 'Önce giriş bariyeri açılmalı ve araç kantara alınmalıdır.'],
+    'barrier_required' => ['alert--danger', 'Araç kantar tartımına uygun durumda değil.'],
     'barrier_opened' => ['alert--success', 'Giriş bariyeri açıldı, aracın kantara çıkması bekleniyor.'],
     'barrier_failed' => ['alert--danger', 'Bariyer simülasyonu başarısız oldu.'],
     'vehicle_on_scale' => ['alert--success', 'Araç kantara giriş yaptı. İlk tartım alanı açıldı.'],
@@ -18,6 +18,8 @@ $alerts = [
     'rollback_weight_locked' => ['alert--danger', 'Bu araç için 1. tartım kaydedilmiş. Geri alma işlemi sadece yetkili kullanıcı tarafından yapılabilir.'],
     'rollback_failed' => ['alert--danger', 'Kantar geri alma işlemi tamamlanamadı. Lütfen tekrar deneyin.'],
     'invalid' => ['alert--danger', 'Formdaki hatalı alanları kontrol edin.'],
+    'outbound_first_saved' => ['alert--success', 'Çıkış 1. tartımı kaydedildi. Araç yükleme adımına aktarıldı.'],
+    'loading_assigned' => ['alert--success', 'Çıkış barkodu üretildi ve araç dolum/yükleme alanına yönlendirildi.'],
 ];
 $formatKg = static fn (mixed $kg): string => number_format((float) $kg, 0, ',', '.') . ' kg';
 $formatTon = static fn (mixed $kg): string => number_format(((float) $kg) / 1000, 2, ',', '.') . ' ton';
@@ -52,11 +54,13 @@ $canAdminRollbackWeighbridge = (bool) ($canAdminRollbackWeighbridge ?? false);
 $rollbackStatuses = ['kantara_geldi', 'giriş_bariyeri_açıldı', 'kantarda', 'at_weighbridge'];
 $canShowRollback = static fn (array $row): bool => in_array((string) ($row['status'] ?? ''), $rollbackStatuses, true);
 $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? null) !== null && ($row['first_weight_kg'] ?? '') !== '';
+$selectedOutboundRecord = $selectedOutboundRecord ?? null;
+$outboundFirstWeighingWaiting = $outboundFirstWeighingWaiting ?? [];
 ?>
 <header class="page-header">
     <div>
         <h1 class="page-title">Kantar İşlemleri</h1>
-        <p class="page-subtitle">Kantara gelen araçları, bariyer simülasyonunu ve ilk tartım sürecini yönetin.</p>
+        <p class="page-subtitle">Kantara gelen giriş ve çıkış araçlarının tartımını tek ekrandan alın.</p>
     </div>
 </header>
 
@@ -72,7 +76,6 @@ $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? nu
         <div><span>Ton karşılığı</span><strong><?= number_format((float) $scaleStatus['weight_ton'], 2, ',', '.') ?> ton</strong></div>
         <div><span>Son okuma</span><strong><?= htmlspecialchars((string) $scaleStatus['last_read_at']) ?></strong></div>
         <div><span>Aktif plaka</span><strong><?= htmlspecialchars((string) ($scaleStatus['active_plate'] ?? '-')) ?></strong></div>
-        <div><span>Bariyer</span><strong><?= htmlspecialchars((string) $scaleStatus['barrier_status']) ?></strong></div>
     </div>
 </section>
 
@@ -86,8 +89,8 @@ $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? nu
     </form>
 </section>
 
-<section class="panel">
-    <div class="section-heading"><h2>Araç Kantara Geldi</h2></div>
+<section class="panel operation-panel operation-panel--inbound">
+    <div class="section-heading"><h2>Giriş Tartımı Bekleyen Araçlar</h2><span class="badge badge--success">Ürün Girişi</span></div>
     <div class="table-wrap">
         <table class="data-table data-table--compact">
             <thead>
@@ -98,7 +101,7 @@ $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? nu
                     <tr><td colspan="9" class="empty-state">Kantara gelen araç yok.</td></tr>
                 <?php endif; ?>
                 <?php foreach ($arrivals as $row): ?>
-                    <tr class="clickable-row" data-vehicle-entry-id="<?= (int) $row['id'] ?>">
+                    <tr class="clickable-row operation-row-state--inbound" data-vehicle-entry-id="<?= (int) $row['id'] ?>" data-focus-id="entry-<?= (int) $row['id'] ?>">
                         <td><strong><?= htmlspecialchars((string) $row['notification_number']) ?></strong></td>
                         <td><?= htmlspecialchars((string) $row['plate_number']) ?></td>
                         <td><?= htmlspecialchars($senderName($row)) ?></td>
@@ -108,11 +111,7 @@ $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? nu
                         <td><?= htmlspecialchars((string) ($row['expected_arrival_date'] ?: $row['updated_at'])) ?></td>
                         <td><span class="badge badge--muted"><?= htmlspecialchars($statusLabels[$row['status']] ?? $row['status']) ?></span></td>
                         <td class="table-actions">
-                            <a class="button button--small" href="/weighbridge-entry?plate=<?= urlencode((string) $row['plate_number']) ?>">Detay</a>
-                            <form action="/weighbridge-entry/open-barrier" method="post" class="inline-form" data-confirm="Giriş bariyerini simülasyon modunda açmak istediğinize emin misiniz?">
-                                <input type="hidden" name="notification_id" value="<?= (int) $row['id'] ?>">
-                                <button class="button button--small button--primary" type="submit">Girişi Aç</button>
-                            </form>
+                            <a class="button button--small button--primary" href="/weighbridge-entry?entry_id=<?= (int) $row['id'] ?>&focus=entry-<?= (int) $row['id'] ?>">1. Tartımı Yap</a>
                         </td>
                     </tr>
                 <?php endforeach; ?>
@@ -121,7 +120,70 @@ $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? nu
     </div>
 </section>
 
-<section class="panel detail-panel">
+<section class="panel operation-panel operation-panel--outbound" id="outbound-first-weighing">
+    <div class="section-heading"><h2>Çıkış 1. Tartım Bekleyen Araçlar</h2><span class="badge badge--danger">Ürün Çıkışı</span></div>
+    <div class="table-wrap">
+        <table class="data-table data-table--compact">
+            <thead>
+                <tr><th>İşlem no</th><th>Plaka</th><th>Alıcı</th><th>Ürün</th><th>Kaynak silo</th><th>Planlanan</th><th class="table-actions">İşlemler</th></tr>
+            </thead>
+            <tbody>
+                <?php if ($outboundFirstWeighingWaiting === []): ?>
+                    <tr><td colspan="7" class="empty-state">Çıkış 1. tartım bekleyen araç yok.</td></tr>
+                <?php endif; ?>
+                <?php foreach ($outboundFirstWeighingWaiting as $row): ?>
+                    <tr class="clickable-row operation-row-state--outbound" data-outbound-id="<?= (int) $row['outbound_id'] ?>" data-focus-id="outbound-<?= (int) $row['outbound_id'] ?>">
+                        <td><strong><?= htmlspecialchars((string) $row['operation_number']) ?></strong></td>
+                        <td><?= htmlspecialchars((string) $row['plate_number']) ?></td>
+                        <td><?= htmlspecialchars((string) $row['sender_display']) ?></td>
+                        <td><?= htmlspecialchars((string) $row['product_name']) ?></td>
+                        <td><?= htmlspecialchars((string) (($row['silo_code'] ?? '-') . ' - ' . ($row['silo_name'] ?? '-'))) ?></td>
+                        <td><?= htmlspecialchars($formatKg($row['planned_quantity_kg'])) ?></td>
+                        <td class="table-actions">
+                            <a class="button button--small button--outbound" href="/weighbridge-entry?outbound_id=<?= (int) $row['outbound_id'] ?>&focus=outbound-<?= (int) $row['outbound_id'] ?>#outbound-first-weighing">Tartım Al</a>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<?php if ($selectedOutboundRecord !== null && in_array((string) ($selectedOutboundRecord['status'] ?? ''), ['OUTBOUND_ARRIVED', 'OUTBOUND_FIRST_WEIGHED'], true)): ?>
+    <section class="panel detail-panel operation-panel--outbound" data-focus-id="outbound-<?= (int) $selectedOutboundRecord['outbound_id'] ?>">
+        <div class="detail-header">
+            <div>
+                <div class="detail-kicker">Ürün Çıkışı / 1. Tartım</div>
+                <h2><?= htmlspecialchars((string) $selectedOutboundRecord['plate_number']) ?></h2>
+            </div>
+            <span class="badge badge--danger"><?= (string) $selectedOutboundRecord['status'] === 'OUTBOUND_FIRST_WEIGHED' ? 'Dolum barkodu hazır' : '1. tartım bekliyor' ?></span>
+        </div>
+        <div class="detail-grid">
+            <div><span>Alıcı</span><strong><?= htmlspecialchars((string) $selectedOutboundRecord['sender_display']) ?></strong></div>
+            <div><span>Ürün</span><strong><?= htmlspecialchars((string) $selectedOutboundRecord['product_name']) ?></strong></div>
+            <div><span>Kaynak silo</span><strong><?= htmlspecialchars((string) (($selectedOutboundRecord['silo_code'] ?? '-') . ' - ' . ($selectedOutboundRecord['silo_name'] ?? '-'))) ?></strong></div>
+            <div><span>Planlanan</span><strong><?= htmlspecialchars($formatKg($selectedOutboundRecord['planned_quantity_kg'])) ?></strong></div>
+            <div><span>Çıkış barkodu</span><strong><?= htmlspecialchars((string) ($selectedOutboundRecord['outbound_barcode'] ?? '-')) ?></strong></div>
+        </div>
+        <?php if ((string) $selectedOutboundRecord['status'] === 'OUTBOUND_ARRIVED'): ?>
+            <form action="/outbound-loadings/first-weight" method="post" class="weight-form">
+                <input type="hidden" name="return_to" value="weighbridge_entry">
+                <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['outbound_id'] ?>">
+                <label class="field"><span>1. tartım kg (boş araç)</span><input type="number" name="first_weight_kg" min="1000" step="1" required></label>
+                <label class="field"><span>Tartım zamanı</span><input type="text" value="<?= date('d.m.Y H:i') ?>" readonly></label>
+                <button class="button button--primary button--outbound" type="submit">1. Tartımı Yap</button>
+            </form>
+        <?php else: ?>
+            <form action="/outbound-loadings/assign-silo" method="post" class="operation-row">
+                <input type="hidden" name="return_to" value="weighbridge_entry">
+                <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['outbound_id'] ?>">
+                <button class="button button--primary button--outbound" type="submit">Barkodla Doluma Gönder</button>
+            </form>
+        <?php endif; ?>
+    </section>
+<?php endif; ?>
+
+<section class="panel detail-panel operation-panel--inbound">
     <div class="detail-header">
         <div>
             <div class="detail-kicker">Kantarda Aktif Araç</div>
@@ -139,7 +201,6 @@ $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? nu
             <div><span>Bildirilen miktar</span><strong><?= htmlspecialchars($formatTon($activeRecord['expected_quantity_kg'] ?? 0)) ?></strong></div>
             <div><span>Şoför</span><strong><?= htmlspecialchars((string) ($activeRecord['driver_name'] ?? '-')) ?></strong></div>
             <div><span>Araç</span><strong><?= htmlspecialchars((string) ($activeRecord['vehicle_brand'] ?? '-')) ?></strong></div>
-            <div><span>Bariyer</span><strong><?= $activeRecord['status'] === 'giriş_bariyeri_açıldı' ? 'Açıldı' : 'Kapandı / kantarda' ?></strong></div>
         </div>
 
         <div class="operation-row">
@@ -160,25 +221,18 @@ $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? nu
                 <?php endif; ?>
             <?php endif; ?>
 
-            <?php if ($activeRecord['status'] === 'giriş_bariyeri_açıldı'): ?>
-                <form action="/weighbridge-entry/mark-on-scale" method="post">
-                    <input type="hidden" name="notification_id" value="<?= (int) $activeRecord['id'] ?>">
-                    <button class="button button--primary" type="submit">Kantar Giriş Yaptı</button>
-                </form>
-            <?php endif; ?>
-
-            <?php if (in_array($activeRecord['status'], ['kantara_geldi', 'kantarda'], true)): ?>
+            <?php if (in_array($activeRecord['status'], ['kantara_geldi', 'kantara_yonlendirildi', 'giriş_bariyeri_bekliyor', 'giriş_bariyeri_açıldı', 'kantarda', 'at_weighbridge'], true)): ?>
                 <form action="/weighbridge-entry/save-first-weight" method="post" class="weight-form">
                     <input type="hidden" name="notification_id" value="<?= (int) $activeRecord['id'] ?>">
                     <label class="field<?= $fieldClass('first_weight_kg') ?>"><span>İlk tartım kg</span><input type="number" name="first_weight_kg" value="<?= htmlspecialchars((string) ($validation['old']['first_weight_kg'] ?? '')) ?>" min="1000" max="100000" step="1" required><?= $fieldError('first_weight_kg') ?></label>
                     <label class="field"><span>Tartım zamanı</span><input type="text" value="<?= date('d.m.Y H:i') ?>" readonly></label>
-                    <label class="field<?= $fieldClass('first_weight_reason') ?>"><span>Açıklama</span><input type="text" name="first_weight_reason" value="<?= htmlspecialchars((string) ($validation['old']['first_weight_reason'] ?? '')) ?>" placeholder="Simülasyon / operatör girişi" required><?= $fieldError('first_weight_reason') ?></label>
+                    <input type="hidden" name="first_weight_reason" value="Kantar ekranından operatör tartımı">
                     <button class="button button--primary" type="submit">1. Tartımı Yap</button>
                 </form>
             <?php endif; ?>
         </div>
     <?php else: ?>
-        <p class="empty-state">Girişi açılan veya kantarda bekleyen araç bulunmuyor.</p>
+        <p class="empty-state">Tartım bekleyen giriş aracı bulunmuyor.</p>
     <?php endif; ?>
 </section>
 
@@ -267,6 +321,18 @@ $hasFirstWeight = static fn (array $row): bool => ($row['first_weight_kg'] ?? nu
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
+    const weighbridgeFocus = new URLSearchParams(window.location.search).get('focus');
+    if (weighbridgeFocus) {
+        const focusRow = document.querySelector(`[data-focus-id="${CSS.escape(weighbridgeFocus)}"]`);
+        if (focusRow) {
+            setTimeout(() => {
+                focusRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                focusRow.classList.add('operation-focus-highlight');
+                setTimeout(() => focusRow.classList.remove('operation-focus-highlight'), 2600);
+            }, 140);
+        }
+    }
+
     const modal = document.getElementById('rollback-modal');
     const backdrop = document.querySelector('[data-rollback-backdrop]');
     const notificationInput = document.getElementById('rollback-notification-id');

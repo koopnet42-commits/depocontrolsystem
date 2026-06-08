@@ -25,7 +25,7 @@ $selected = static fn (string $value, mixed $current): string => (string) $value
 
         <label class="field">
             <span>Ürün tipi</span>
-            <select name="product_id" required>
+            <select name="product_id" required data-rule-product>
                 <option value="">Seçiniz</option>
                 <?php foreach ($products as $product): ?>
                     <option value="<?= (int) $product['id'] ?>" <?= $selected((string) $product['id'], $rule['product_id']) ?>>
@@ -37,14 +37,15 @@ $selected = static fn (string $value, mixed $current): string => (string) $value
 
         <label class="field">
             <span>Hedef silo</span>
-            <select name="silo_id" required>
+            <select name="silo_id" required data-rule-silo>
                 <option value="">Seçiniz</option>
                 <?php foreach ($silos as $silo): ?>
-                    <option value="<?= (int) $silo['id'] ?>" <?= $selected((string) $silo['id'], $rule['silo_id']) ?>>
+                    <option value="<?= (int) $silo['id'] ?>" data-product-id="<?= (int) ($silo['product_id'] ?? 0) ?>" <?= $selected((string) $silo['id'], $rule['silo_id']) ?>>
                         <?= htmlspecialchars($silo['code'] . ' - ' . $silo['name']) ?>
                     </option>
                 <?php endforeach; ?>
             </select>
+            <small class="field-help">Hedef silo, seçilen ürünle eşleşmelidir.</small>
         </label>
 
         <label class="field">
@@ -93,3 +94,28 @@ $selected = static fn (string $value, mixed $current): string => (string) $value
         </div>
     </form>
 </section>
+
+<script>
+(() => {
+    const product = document.querySelector('[data-rule-product]');
+    const silo = document.querySelector('[data-rule-silo]');
+    if (!product || !silo) return;
+
+    const syncSilos = () => {
+        const productId = product.value;
+        [...silo.options].forEach((option) => {
+            if (option.value === '') return;
+            const matches = option.dataset.productId === productId;
+            option.disabled = productId !== '' && !matches;
+            const base = option.textContent.replace(/\s+- bu ürüne uygun değil$/, '');
+            option.textContent = option.disabled ? `${base} - bu ürüne uygun değil` : base;
+        });
+        if (silo.selectedOptions[0]?.disabled) {
+            silo.value = '';
+        }
+    };
+
+    product.addEventListener('change', syncSilos);
+    syncSilos();
+})();
+</script>

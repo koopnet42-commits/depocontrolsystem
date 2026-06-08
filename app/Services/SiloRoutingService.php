@@ -22,6 +22,7 @@ final class SiloRoutingService
              WHERE sa.id = :analysis_id
                 AND sr.is_active = 1
                 AND s.is_active = 1
+                AND s.product_id = sa.product_id
                 AND (sr.min_moisture IS NULL OR (sa.moisture IS NOT NULL AND sa.moisture >= sr.min_moisture))
                 AND (sr.max_moisture IS NULL OR (sa.moisture IS NOT NULL AND sa.moisture <= sr.max_moisture))
                 AND (sr.min_protein IS NULL OR (sa.protein IS NOT NULL AND sa.protein >= sr.min_protein))

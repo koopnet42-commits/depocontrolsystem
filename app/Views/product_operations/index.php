@@ -6,6 +6,7 @@ $screen = $screen ?? 'pre_notifications';
 $isEntryScreen = $screen === 'entry';
 $operationMode = $operationMode ?? ($isEntryScreen ? 'inbound' : 'inbound_pre');
 $isOutboundMode = $isEntryScreen && in_array($operationMode, ['outbound', 'outbound_pre'], true);
+$isPreNotificationMode = $isEntryScreen && in_array($operationMode, ['inbound_pre', 'outbound_pre'], true);
 $transferNotification = $isEntryScreen && $operationMode === 'inbound' && is_array($selectedNotification ?? null) ? $selectedNotification : null;
 $formatKg = static fn (mixed $kg): string => number_format((float) $kg, 0, ',', '.') . ' kg';
 $formatTon = static fn (mixed $kg): string => number_format(((float) $kg) / 1000, 2, ',', '.') . ' ton';
@@ -148,6 +149,7 @@ $activeProcessStatuses = [
     'unloaded',
 ];
 $entryPreNotifications = array_values(array_filter($notifications ?? [], static fn (array $row): bool => in_array((string) ($row['status'] ?? ''), [...$waitingStatuses, ...$activeProcessStatuses], true)));
+$incomingPreNotificationRows = array_values(array_filter($notifications ?? [], static fn (array $row): bool => in_array((string) ($row['status'] ?? ''), $waitingStatuses, true) && (string) ($row['operation_type'] ?? 'PRODUCT_IN') !== 'PRODUCT_OUT'));
 $activeProcessEntries = array_values(array_filter($incomingEntries ?? [], static fn (array $row): bool => in_array((string) ($row['status'] ?? ''), $activeProcessStatuses, true)));
 $outboundRecords = $outboundRecords ?? [];
 $outboundHistories = $outboundHistories ?? [];
@@ -160,6 +162,7 @@ $outboundActiveStatuses = [
     'OUTBOUND_SECOND_WEIGHING_WAITING',
 ];
 $outboundPreEntries = array_values(array_filter($outboundRecords ?? [], static fn (array $row): bool => in_array((string) ($row['status'] ?? ''), $outboundWaitingStatuses, true)));
+$outboundPreNotificationRows = $outboundPreEntries;
 $activeOutboundEntries = array_values(array_filter($outboundRecords ?? [], static fn (array $row): bool => in_array((string) ($row['status'] ?? ''), $outboundActiveStatuses, true)));
 $outboundLastAction = static function (array $row) use ($outboundHistories): string {
     $items = $outboundHistories[(int) $row['id']] ?? [];
@@ -237,10 +240,14 @@ $messages = [
     'company_notified' => ['alert--success', 'Firma haberdar edildi notu kaydedildi.'],
     'note_added' => ['alert--success', 'Not kaydedildi.'],
     'created' => ['alert--success', 'Ürün çıkışı kaydı oluşturuldu.'],
+    'created_to_weighbridge' => ['alert--success', 'Ürün çıkışı kaydı oluşturuldu. Araç kantar ekranına aktarıldı.'],
     'first_saved' => ['alert--success', 'Ürün çıkışı 1. tartımı kaydedildi.'],
     'first_required' => ['alert--danger', 'Önce ürün çıkışı 1. tartımı kaydedilmelidir.'],
     'silo_mismatch' => ['alert--danger', 'Seçilen silo ürün tipiyle uyumlu değil.'],
     'started' => ['alert--success', 'Çıkış ön bildirimi sürece aktarıldı. 1. tartım bekleniyor.'],
+    'started_to_weighbridge' => ['alert--success', 'Çıkış ön bildirimi sürece aktarıldı. Araç kantar ekranına aktarıldı.'],
+    'saved_to_weighbridge' => ['alert--success', 'Araç kaydı oluşturuldu. Araç kantar ekranına aktarıldı.'],
+    'transferred_to_weighbridge' => ['alert--success', 'Ön bildirim akışa alındı. Araç kantar ekranına aktarıldı.'],
     'loading_assigned' => ['alert--success', 'Araç yükleme alanına yönlendirildi.'],
 ];
 $outboundStatusLabel = static fn (string $status): string => [
@@ -269,12 +276,19 @@ $validation = $validation ?? ['errors' => [], 'old' => [], 'general' => null];
 $validationJson = json_encode($validation, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT);
 $validationTargetModal = $validation['errors'] === []
     ? ''
-    : (array_key_exists('planned_quantity_kg', $validation['old'] ?? []) ? '' : (array_key_exists('quantity_ton', $validation['old'] ?? []) ? 'direct-entry-modal' : 'notification-modal'));
+    : (array_key_exists('planned_quantity_kg', $validation['old'] ?? []) || array_key_exists('quantity_ton', $validation['old'] ?? []) ? '' : 'notification-modal');
 $oldInput = is_array($validation['old'] ?? null) ? $validation['old'] : [];
 $oldValue = static fn (string $field, mixed $default = ''): string => htmlspecialchars((string) ($oldInput[$field] ?? $default));
 $fieldError = static fn (string $field): string => isset($validation['errors'][$field]) ? '<small class="field-error">' . htmlspecialchars((string) $validation['errors'][$field]) . '</small>' : '';
 $fieldClass = static fn (string $field): string => isset($validation['errors'][$field]) ? ' field--error' : '';
 $messageData = $messages[$message ?? ''] ?? null;
+$focusTarget = (string) ($_GET['focus'] ?? '');
+$nextTarget = (string) ($_GET['next'] ?? '');
+$nextWeighbridgeUrl = $focusTarget !== '' && str_starts_with($focusTarget, 'outbound-')
+    ? '/weighbridge-entry?outbound_id=' . (int) substr($focusTarget, 9) . '&focus=' . urlencode($focusTarget) . '#outbound-first-weighing'
+    : ($focusTarget !== '' && str_starts_with($focusTarget, 'entry-')
+        ? '/weighbridge-entry?entry_id=' . (int) substr($focusTarget, 6) . '&focus=' . urlencode($focusTarget)
+        : '/weighbridge-entry');
 $returnTarget = $isEntryScreen ? 'product_operations_entry' : 'product_operations_pre_notifications';
 $flowNavigationPermissionsJson = json_encode([
     'weighbridge' => \App\Core\Auth::canAccessPath('/weighbridge-entry'),
@@ -286,22 +300,10 @@ $flowNavigationPermissionsJson = json_encode([
 ?>
 <header class="page-header product-operation-header <?= $isOutboundMode ? 'operation-outbound' : 'operation-inbound' ?>">
     <div>
-        <h1 class="page-title"><?= $isEntryScreen ? 'Ürün Girişi / Çıkışı' : 'Ürün Ön Bildirimi' ?></h1>
-        <p class="page-subtitle"><?= $isEntryScreen ? 'Tesise giren ve tesisten çıkan ürün işlemlerini tek ekrandan yönetin.' : 'Tesise gelecek araçlar için ön bildirim oluşturun.' ?></p>
+        <h1 class="page-title">Ürün İşlemleri</h1>
+        <p class="page-subtitle">Ön bildirim, giriş, çıkış ve araç izleme süreçlerini tek ekrandan yönetin.</p>
     </div>
-    <?php if ($isEntryScreen): ?>
-        <?php if ($canDirectEntry && ! $isOutboundMode): ?>
-            <button class="button button--primary button--hero-action" type="button" data-open-modal="direct-entry-modal">
-                <span class="button__icon" aria-hidden="true">+</span>
-                Yeni Ürün Girişi
-            </button>
-        <?php elseif ($isOutboundMode): ?>
-            <a class="button button--primary button--hero-action button--outbound" href="#outbound-form">
-                <span class="button__icon" aria-hidden="true">-</span>
-                Yeni Ürün Çıkışı
-            </a>
-        <?php endif; ?>
-    <?php else: ?>
+    <?php if (! $isEntryScreen): ?>
         <button class="button button--primary button--hero-action" type="button" data-open-modal="notification-modal" data-mode="create">
             <span class="button__icon" aria-hidden="true">+</span>
             Yeni Ön Bildirim
@@ -310,30 +312,48 @@ $flowNavigationPermissionsJson = json_encode([
 </header>
 
 <?php if ($messageData !== null): ?>
-    <div class="alert <?= htmlspecialchars($messageData[0]) ?>"><?= htmlspecialchars($messageData[1]) ?></div>
+    <div class="alert <?= htmlspecialchars($messageData[0]) ?> operation-alert">
+        <span><?= htmlspecialchars($messageData[1]) ?></span>
+        <?php if ($nextTarget === 'weighbridge'): ?>
+            <a class="button button--small button--primary" href="<?= htmlspecialchars($nextWeighbridgeUrl) ?>">Kantar Ekranına Git</a>
+        <?php endif; ?>
+    </div>
 <?php endif; ?>
 
-<?php if ($isEntryScreen): ?>
-    <section class="operation-type-switch <?= $isOutboundMode ? 'operation-outbound' : 'operation-inbound' ?>" aria-label="İşlem tipi">
-        <a class="operation-type-card <?= $operationMode === 'inbound' ? 'is-active' : '' ?>" href="/product-operations/entry?mode=inbound">
-            <span class="operation-type-card__icon" aria-hidden="true">↓</span>
+<section class="operation-type-switch <?= $isOutboundMode ? 'operation-outbound' : 'operation-inbound' ?>" aria-label="İşlem tipi">
+    <a class="operation-type-card <?= in_array($operationMode, ['inbound_pre', 'outbound_pre'], true) ? 'is-active' : '' ?>" href="/product-operations/entry?mode=inbound_pre">
+        <span class="operation-type-card__icon" aria-hidden="true">↓</span>
+        <strong>Ön Bildirim</strong>
+        <small>Tesise gelecek araç planı.</small>
+    </a>
+    <a class="operation-type-card <?= $operationMode === 'inbound' ? 'is-active' : '' ?>" href="/product-operations/entry?mode=inbound">
+        <span class="operation-type-card__icon" aria-hidden="true">↓</span>
+        <strong>Ürün Girişi</strong>
+        <small>Dolu araç girer, boş araç çıkar.</small>
+    </a>
+    <a class="operation-type-card operation-type-card--out <?= $operationMode === 'outbound' ? 'is-active' : '' ?>" href="/product-operations/entry?mode=outbound">
+        <span class="operation-type-card__icon" aria-hidden="true">↑</span>
+        <strong>Ürün Çıkışı</strong>
+        <small>Boş araç girer, dolu araç çıkar.</small>
+    </a>
+    <a class="operation-type-card operation-type-card--track <?= in_array($operationMode, ['inbound', 'outbound'], true) ? 'is-monitor' : '' ?>" href="#vehicle-monitor">
+        <span class="operation-type-card__icon" aria-hidden="true">◎</span>
+        <strong>Araç İzleme</strong>
+        <small>Aktif giriş ve çıkış araçları.</small>
+    </a>
+</section>
+
+<?php if ($isPreNotificationMode): ?>
+    <section class="pre-mode-switch <?= $isOutboundMode ? 'pre-mode-switch--outbound' : 'pre-mode-switch--inbound' ?>" aria-label="Ön bildirim yönü">
+        <a class="<?= $operationMode === 'inbound_pre' ? 'is-active' : '' ?>" href="/product-operations/entry?mode=inbound_pre">
+            <span aria-hidden="true">↓</span>
             <strong>Gelen Ürün</strong>
-            <small>Dolu araç girer, boş araç çıkar. Silo stoğu artar.</small>
+            <small>Tesise ürün getirecek araç</small>
         </a>
-        <a class="operation-type-card <?= $operationMode === 'inbound_pre' ? 'is-active' : '' ?>" href="/product-operations/entry?mode=inbound_pre">
-            <span class="operation-type-card__icon" aria-hidden="true">↓</span>
-            <strong>Gelen Ürün Ön Bildirimi</strong>
-            <small>Tesise gelecek araç için yeşil giriş ön bildirimi.</small>
-        </a>
-        <a class="operation-type-card operation-type-card--out <?= $operationMode === 'outbound' ? 'is-active' : '' ?>" href="/product-operations/entry?mode=outbound">
-            <span class="operation-type-card__icon" aria-hidden="true">↑</span>
-            <strong>Ürün Satış / Çıkış</strong>
-            <small>Boş araç girer, dolu araç çıkar. Silo stoğu azalır.</small>
-        </a>
-        <a class="operation-type-card operation-type-card--out <?= $operationMode === 'outbound_pre' ? 'is-active' : '' ?>" href="/product-operations/entry?mode=outbound_pre">
-            <span class="operation-type-card__icon" aria-hidden="true">↑</span>
-            <strong>Ürün Çıkış Ön Bildirimi</strong>
-            <small>Çıkış planını hazırlayın, sonra satış/çıkışa aktarın.</small>
+        <a class="<?= $operationMode === 'outbound_pre' ? 'is-active' : '' ?>" href="/product-operations/entry?mode=outbound_pre">
+            <span aria-hidden="true">↑</span>
+            <strong>Giden Ürün</strong>
+            <small>Bizden ürün alacak araç</small>
         </a>
     </section>
 <?php endif; ?>
@@ -388,14 +408,15 @@ $flowNavigationPermissionsJson = json_encode([
                             </label>
                             <label class="field<?= $fieldClass('source_silo_id') ?>">
                                 <span>Kaynak silo</span>
-                                <select name="source_silo_id" required>
+                                <select name="source_silo_id" required data-product-silo-select>
                                     <option value="">Seçiniz</option>
                                     <?php foreach (($silos ?? []) as $silo): ?>
-                                        <option value="<?= (int) $silo['id'] ?>" <?= (string) ($oldInput['source_silo_id'] ?? '') === (string) $silo['id'] ? 'selected' : '' ?>>
+                                        <option value="<?= (int) $silo['id'] ?>" data-product-id="<?= (int) ($silo['product_id'] ?? 0) ?>" <?= (string) ($oldInput['source_silo_id'] ?? '') === (string) $silo['id'] ? 'selected' : '' ?>>
                                             <?= htmlspecialchars((string) ($silo['code'] . ' - ' . $silo['name'] . ' / ' . ($silo['product_name'] ?? '-') . ' / ' . $formatTon($silo['current_stock_kg']))) ?>
                                         </option>
                                     <?php endforeach; ?>
                                 </select>
+                                <small class="field-help">Sadece seçilen ürünle eşleşen silolar seçilebilir.</small>
                                 <?= $fieldError('source_silo_id') ?>
                             </label>
                             <label class="field<?= $fieldClass('planned_quantity_kg') ?>"><span>Tahmini miktar kg</span><input type="number" name="planned_quantity_kg" min="1" step="1" value="<?= $oldValue('planned_quantity_kg') ?>" required><?= $fieldError('planned_quantity_kg') ?></label>
@@ -412,7 +433,7 @@ $flowNavigationPermissionsJson = json_encode([
             </section>
 
             <?php if (($selectedOutboundRecord ?? null) !== null): ?>
-                <section class="panel detail-panel operation-panel--outbound">
+                <section class="panel detail-panel operation-panel--outbound" data-focus-id="outbound-<?= (int) $selectedOutboundRecord['id'] ?>">
                     <div class="detail-header">
                         <div>
                             <div class="detail-kicker">Ürün Çıkışı / <?= htmlspecialchars($outboundStatusLabel((string) $selectedOutboundRecord['status'])) ?></div>
@@ -430,6 +451,7 @@ $flowNavigationPermissionsJson = json_encode([
                         <div><span>1. tartım</span><strong><?= htmlspecialchars($selectedOutboundRecord['first_weight_kg'] === null ? '-' : $formatKg($selectedOutboundRecord['first_weight_kg'])) ?></strong></div>
                         <div><span>2. tartım</span><strong><?= htmlspecialchars($selectedOutboundRecord['second_weight_kg'] === null ? '-' : $formatKg($selectedOutboundRecord['second_weight_kg'])) ?></strong></div>
                         <div><span>Net çıkan ürün</span><strong><?= htmlspecialchars($selectedOutboundRecord['net_quantity_kg'] === null ? '-' : $formatKg($selectedOutboundRecord['net_quantity_kg'])) ?></strong></div>
+                        <div><span>Çıkış barkodu</span><strong><?= htmlspecialchars((string) ($selectedOutboundRecord['outbound_barcode'] ?? '-')) ?></strong></div>
                     </div>
                     <div class="operation-row">
                         <?php $selectedOutboundStatus = (string) ($selectedOutboundRecord['status'] ?? ''); ?>
@@ -441,18 +463,13 @@ $flowNavigationPermissionsJson = json_encode([
                             </form>
                         <?php endif; ?>
                         <?php if ($selectedOutboundStatus === 'OUTBOUND_ARRIVED'): ?>
-                            <form action="/outbound-loadings/first-weight" method="post">
-                                <input type="hidden" name="return_to" value="product_operations_entry">
-                                <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['id'] ?>">
-                                <label class="field"><span>1. tartım kg (boş araç)</span><input type="number" name="first_weight_kg" min="1000" step="1" required></label>
-                                <button class="button button--primary button--outbound" type="submit">1. Tartımı Kaydet</button>
-                            </form>
+                            <a class="button button--primary button--outbound" href="/weighbridge-entry?outbound_id=<?= (int) $selectedOutboundRecord['id'] ?>&focus=outbound-<?= (int) $selectedOutboundRecord['id'] ?>#outbound-first-weighing">Kantar Ekranına Git</a>
                         <?php endif; ?>
                         <?php if ($selectedOutboundStatus === 'OUTBOUND_FIRST_WEIGHED'): ?>
                             <form action="/outbound-loadings/assign-silo" method="post">
                                 <input type="hidden" name="return_to" value="product_operations_entry">
                                 <input type="hidden" name="id" value="<?= (int) $selectedOutboundRecord['id'] ?>">
-                                <button class="button button--primary button--outbound" type="submit">Yükleme Alanına Yönlendir</button>
+                                <button class="button button--primary button--outbound" type="submit">Barkodla Doluma Gönder</button>
                             </form>
                         <?php endif; ?>
                         <?php if ($selectedOutboundStatus === 'OUTBOUND_LOADING_ASSIGNED_TO_SILO'): ?>
@@ -469,7 +486,10 @@ $flowNavigationPermissionsJson = json_encode([
                 </section>
             <?php endif; ?>
 
-            <section class="panel operation-panel entry-board operation-panel--outbound">
+            <?php if ($isPreNotificationMode): ?>
+                <?php require __DIR__ . '/partials/pre_notification_board.php'; ?>
+            <?php else: ?>
+            <section class="panel operation-panel entry-board operation-panel--outbound" id="vehicle-monitor">
                 <div class="section-heading section-heading--actions">
                     <div>
                         <h2>Aktif Çıkış Ön Bildirimleri</h2>
@@ -487,7 +507,7 @@ $flowNavigationPermissionsJson = json_encode([
                         <div class="empty-state entry-empty">Aktif çıkış ön bildirimi yok.</div>
                     <?php endif; ?>
                     <?php foreach ($outboundPreEntries as $notification): ?>
-                        <article class="entry-notification-card <?= htmlspecialchars($outboundStatusClass($notification)) ?>" data-outbound-id="<?= (int) $notification['id'] ?>">
+                        <article class="entry-notification-card <?= htmlspecialchars($outboundStatusClass($notification)) ?>" data-outbound-id="<?= (int) $notification['id'] ?>" data-focus-id="outbound-<?= (int) $notification['id'] ?>">
                             <div class="entry-card-main">
                                 <strong class="entry-plate"><?= htmlspecialchars((string) ($notification['plate_number'] ?? '-')) ?></strong>
                                 <span><?= htmlspecialchars((string) $notification['product_name']) ?></span>
@@ -522,7 +542,7 @@ $flowNavigationPermissionsJson = json_encode([
                     <?php endif; ?>
                     <?php foreach ($activeOutboundEntries as $entry): ?>
                         <?php $outboundStage = $outboundStageLabel((string) $entry['status']); ?>
-                        <article class="process-card <?= htmlspecialchars($outboundStatusClass($entry)) ?>" data-outbound-id="<?= (int) $entry['id'] ?>">
+                        <article class="process-card <?= htmlspecialchars($outboundStatusClass($entry)) ?>" data-outbound-id="<?= (int) $entry['id'] ?>" data-focus-id="outbound-<?= (int) $entry['id'] ?>">
                             <div class="process-card__top">
                                 <strong><?= htmlspecialchars((string) ($entry['plate_number'] ?? '-')) ?></strong>
                                 <span><?= htmlspecialchars($outboundStage) ?></span>
@@ -541,45 +561,21 @@ $flowNavigationPermissionsJson = json_encode([
                                 <span class="<?= $outboundStage === '2. Tartım' ? 'is-current' : '' ?>">2. Tartım</span>
                             </div>
                             <div class="process-card__actions">
-                                <a class="button button--small button--outbound" href="/product-operations/entry?mode=outbound&outbound_id=<?= (int) $entry['id'] ?>">Süreci Aç</a>
+                                <?php if ((string) $entry['status'] === 'OUTBOUND_ARRIVED'): ?>
+                                    <a class="button button--small button--outbound" href="/weighbridge-entry?outbound_id=<?= (int) $entry['id'] ?>&focus=outbound-<?= (int) $entry['id'] ?>#outbound-first-weighing">Kantar Ekranı</a>
+                                <?php else: ?>
+                                    <a class="button button--small button--outbound" href="/product-operations/entry?mode=outbound&outbound_id=<?= (int) $entry['id'] ?>">Süreci Aç</a>
+                                <?php endif; ?>
                             </div>
                         </article>
                     <?php endforeach; ?>
                 </div>
             </section>
 
-            <section class="panel operation-panel operation-panel--outbound">
-                <div class="section-heading section-heading--actions">
-                    <div>
-                        <h2>Tüm Çıkış Kayıtları</h2>
-                        <span class="table-muted">Tamamlanan, iptal ve arşiv çıkış kayıtları dahil tüm liste.</span>
-                    </div>
-                </div>
-                <div class="table-wrap">
-                    <table class="data-table data-table--compact">
-                        <thead><tr><th>İşlem No</th><th>Plaka</th><th>Alıcı</th><th>Ürün</th><th>Kaynak Silo</th><th>İrsaliye</th><th>Planlanan</th><th>Durum</th><th class="table-actions">İşlem</th></tr></thead>
-                        <tbody>
-                            <?php if (($outboundRecords ?? []) === []): ?><tr><td colspan="9" class="empty-state">Ürün çıkışı kaydı yok.</td></tr><?php endif; ?>
-                            <?php foreach (($outboundRecords ?? []) as $row): ?>
-                                <tr class="<?= htmlspecialchars($outboundStatusClass($row)) ?>">
-                                    <td><strong><?= htmlspecialchars($outboundOperationNumber($row['operation_number'])) ?></strong><span class="badge badge--danger">Ürün Çıkışı</span></td>
-                                    <td><?= htmlspecialchars((string) $row['plate_number']) ?></td>
-                                    <td><?= htmlspecialchars((string) $row['sender_display']) ?></td>
-                                    <td><?= htmlspecialchars((string) $row['product_name']) ?></td>
-                                    <td><?= htmlspecialchars((string) ($row['silo_code'] . ' - ' . $row['silo_name'])) ?></td>
-                                    <td><?= htmlspecialchars((string) ($row['dispatch_number'] ?? '-')) ?></td>
-                                    <td><?= htmlspecialchars($formatKg($row['planned_quantity_kg'])) ?></td>
-                                    <td><span class="badge badge--danger"><?= htmlspecialchars($outboundStatusLabel((string) $row['status'])) ?></span></td>
-                                    <td class="table-actions"><a class="button button--small button--primary button--outbound" href="/product-operations/entry?mode=outbound&outbound_id=<?= (int) $row['id'] ?>">Aç</a></td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
+            <?php endif; ?>
         <?php else: ?>
             <?php if ($operationMode === 'inbound_pre'): ?>
-                <section class="panel operation-panel operation-form-card operation-form-card--inbound">
+                <section class="panel operation-panel operation-form-card operation-form-card--inbound" id="pre-form">
                     <div class="operation-form-card__header">
                         <span class="operation-form-card__icon" aria-hidden="true">↓</span>
                         <div>
@@ -598,7 +594,7 @@ $flowNavigationPermissionsJson = json_encode([
                             <div class="form-grid form-grid--section">
                                 <div class="field field--sender-type"><span>Firma / şahıs</span><div class="sender-type-cards sender-type-cards--compact"><label><input type="radio" name="sender_type" value="company" checked><span class="sender-card-icon">F</span><strong>Firma</strong></label><label><input type="radio" name="sender_type" value="person"><span class="sender-card-icon">S</span><strong>Şahıs</strong></label></div></div>
                                 <label class="field sender-company<?= $fieldClass('company_name') ?>"><span>Firma</span><input type="search" name="company_name" list="op-company-list"><input type="hidden" name="company_id"><small class="field-help js-company-help">Mevcut firmalar önerilir; yoksa yeni firma bilgisiyle kaydedilir.</small><?= $fieldError('company_name') ?></label>
-                                <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye no</span><input type="text" name="dispatch_number"><?= $fieldError('dispatch_number') ?></label>
+                                <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye no (varsa)</span><input type="text" name="dispatch_number"><?= $fieldError('dispatch_number') ?></label>
                                 <label class="field sender-company"><span>Vergi no</span><input type="text" name="sender_tax_number"></label>
                                 <label class="field sender-person<?= $fieldClass('sender_name') ?>" hidden><span>Ad soyad</span><input type="search" name="sender_name" list="op-person-list" disabled><small class="field-help js-person-help">Daha önce gelen şahıslar önerilir.</small><?= $fieldError('sender_name') ?></label>
                                 <label class="field sender-person<?= $fieldClass('identity_number') ?>" hidden><span>TC kimlik no</span><input type="text" name="identity_number" maxlength="11" inputmode="numeric" disabled><?= $fieldError('identity_number') ?></label>
@@ -650,7 +646,7 @@ $flowNavigationPermissionsJson = json_encode([
                             <div class="form-grid form-grid--section">
                                 <div class="field field--sender-type"><span>Seçim</span><div class="sender-type-cards sender-type-cards--compact"><label><input type="radio" name="sender_type" value="company" <?= ($transferNotification['sender_type'] ?? 'company') !== 'person' ? 'checked' : '' ?>><span class="sender-card-icon">F</span><strong>Firma</strong></label><label><input type="radio" name="sender_type" value="person" <?= ($transferNotification['sender_type'] ?? 'company') === 'person' ? 'checked' : '' ?>><span class="sender-card-icon">S</span><strong>Şahıs</strong></label></div></div>
                                 <label class="field sender-company<?= $fieldClass('company_name') ?>"><span>Firma</span><input type="search" name="company_name" list="op-company-list" value="<?= htmlspecialchars((string) ($transferNotification['company_name'] ?? '')) ?>"><input type="hidden" name="company_id" value="<?= htmlspecialchars((string) ($transferNotification['company_id'] ?? '')) ?>"><small class="field-help js-company-help">Mevcut firmalar önerilir; yoksa yeni firma bilgisiyle kaydedilir.</small><?= $fieldError('company_name') ?></label>
-                                <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye no</span><input type="text" name="dispatch_number" value="<?= htmlspecialchars((string) ($transferNotification['dispatch_number'] ?? '')) ?>"><?= $fieldError('dispatch_number') ?></label>
+                                <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye no</span><input type="text" name="dispatch_number" value="<?= htmlspecialchars((string) ($oldInput['dispatch_number'] ?? $transferNotification['dispatch_number'] ?? '')) ?>"><?= $fieldError('dispatch_number') ?></label>
                                 <label class="field sender-company"><span>Vergi no</span><input type="text" name="sender_tax_number" value="<?= htmlspecialchars((string) ($transferNotification['sender_tax_number'] ?? '')) ?>"></label>
                                 <label class="field sender-person<?= $fieldClass('sender_name') ?>" hidden><span>Ad soyad</span><input type="search" name="sender_name" list="op-person-list" value="<?= htmlspecialchars((string) ($transferNotification['sender_name'] ?? '')) ?>" disabled><small class="field-help js-person-help">Mevcut şahıslar önerilir.</small><?= $fieldError('sender_name') ?></label>
                                 <label class="field sender-person<?= $fieldClass('identity_number') ?>" hidden><span>TC kimlik no</span><input type="text" name="identity_number" maxlength="11" inputmode="numeric" value="<?= htmlspecialchars((string) ($transferNotification['identity_number'] ?? '')) ?>" disabled><?= $fieldError('identity_number') ?></label>
@@ -676,11 +672,14 @@ $flowNavigationPermissionsJson = json_encode([
                             <span class="is-current">1. Araç Bilgileri</span><span>2. 1. Tartım</span><span>3. Silo / Barkod</span><span>4. 2. Tartım</span><span>5. Tamamlandı</span>
                         </div>
                         <div class="net-formula net-formula--inbound">Net miktar = 1. tartım - 2. tartım. Silo stoğu artar.</div>
-                        <div class="form-actions"><button class="button button--primary" type="submit"><?= $transferNotification !== null ? 'Akış Başlat ve Kantar Ekranına Git' : 'Giriş Oluştur ve Kantar Ekranına Git' ?></button></div>
+                        <div class="form-actions"><button class="button button--primary" type="submit"><?= $transferNotification !== null ? 'Akış Başlat' : 'Giriş Oluştur' ?></button></div>
                     </form>
                 </section>
             <?php endif; ?>
-        <section class="panel operation-panel entry-board">
+        <?php if ($isPreNotificationMode): ?>
+            <?php require __DIR__ . '/partials/pre_notification_board.php'; ?>
+        <?php else: ?>
+        <section class="panel operation-panel entry-board" id="vehicle-monitor">
             <div class="section-heading section-heading--actions">
                 <div>
                     <h2>Aktif Ön Bildirimler</h2>
@@ -702,7 +701,7 @@ $flowNavigationPermissionsJson = json_encode([
                 <?php foreach ($entryPreNotifications as $notification): ?>
                     <?php $isWaiting = in_array((string) $notification['status'], $waitingStatuses, true); ?>
                     <?php $isDelayed = $isDelayedNotification($notification); ?>
-                    <article class="entry-notification-card <?= htmlspecialchars($statusClass($notification)) ?>" data-row-detail="<?= (int) $notification['id'] ?>">
+                    <article class="entry-notification-card <?= htmlspecialchars($statusClass($notification)) ?>" data-row-detail="<?= (int) $notification['id'] ?>" data-focus-id="entry-<?= (int) $notification['id'] ?>">
                         <div class="entry-card-main">
                             <strong class="entry-plate"><?= htmlspecialchars((string) ($notification['plate_number'] ?? '-')) ?></strong>
                             <span><?= htmlspecialchars((string) $notification['product_name']) ?></span>
@@ -745,7 +744,7 @@ $flowNavigationPermissionsJson = json_encode([
                     <div class="empty-state entry-empty">Aktif süreçte araç yok.</div>
                 <?php endif; ?>
                 <?php foreach ($activeProcessEntries as $entry): ?>
-                    <article class="process-card <?= htmlspecialchars($statusClass($entry)) ?>" data-row-detail="<?= (int) $entry['id'] ?>">
+                    <article class="process-card <?= htmlspecialchars($statusClass($entry)) ?>" data-row-detail="<?= (int) $entry['id'] ?>" data-focus-id="entry-<?= (int) $entry['id'] ?>">
                         <div class="process-card__top">
                             <strong><?= htmlspecialchars((string) ($entry['plate_number'] ?? '-')) ?></strong>
                             <span><?= htmlspecialchars($stageLabel((string) $entry['status'])) ?></span>
@@ -769,6 +768,8 @@ $flowNavigationPermissionsJson = json_encode([
             </div>
         </section>
         <?php endif; ?>
+        <?php endif; ?>
+        <?php if (! $isPreNotificationMode): ?>
         <section class="panel operation-panel second-waiting-panel">
             <div class="section-heading section-heading--actions">
                 <div>
@@ -803,6 +804,7 @@ $flowNavigationPermissionsJson = json_encode([
                 </table>
             </div>
         </section>
+        <?php endif; ?>
     <?php else: ?>
         <section class="panel operation-panel">
             <div class="section-heading section-heading--actions">
@@ -883,7 +885,7 @@ $flowNavigationPermissionsJson = json_encode([
             <div class="form-grid form-grid--section">
                 <label class="field<?= $fieldClass('product_id') ?>"><span>Ürün tipi</span><select name="product_id" required><option value="">Seçiniz</option><?php foreach ($products as $product): ?><option value="<?= (int) $product['id'] ?>" <?= (string) ($oldInput['product_id'] ?? '') === (string) $product['id'] ? 'selected' : '' ?>><?= htmlspecialchars((string) $product['name']) ?></option><?php endforeach; ?></select><?= $fieldError('product_id') ?></label>
                 <label class="field<?= $fieldClass('expected_quantity_ton') ?>"><span>Miktar ton</span><input type="number" name="expected_quantity_ton" value="<?= $oldValue('expected_quantity_ton') ?>" min="0" step="0.001"><?= $fieldError('expected_quantity_ton') ?></label>
-                <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye no</span><input type="text" name="dispatch_number" value="<?= $oldValue('dispatch_number') ?>"><?= $fieldError('dispatch_number') ?></label>
+                <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye no (varsa)</span><input type="text" name="dispatch_number" value="<?= $oldValue('dispatch_number') ?>"><?= $fieldError('dispatch_number') ?></label>
                 <label class="field field--wide"><span>Açıklama</span><textarea name="notes" rows="3"><?= $oldValue('notes') ?></textarea></label>
             </div>
         </section>
@@ -937,63 +939,6 @@ $flowNavigationPermissionsJson = json_encode([
     </form>
 </dialog>
 
-<dialog class="app-modal app-modal--wide app-modal--modern" id="direct-entry-modal" <?= $validationTargetModal === 'direct-entry-modal' ? 'open' : '' ?>>
-    <form action="/incoming-products/direct" method="post" class="form-grid operation-form operation-form--modern js-direct-form" data-driver-vehicle-form>
-        <input type="hidden" name="return_to" value="product_operations_entry">
-        <input type="hidden" name="operation_type" value="PRODUCT_IN">
-        <input type="hidden" name="form_mode" value="DIRECT_ENTRY">
-        <div class="modal-header"><h2>Yeni Ürün Girişi</h2><button class="modal-close" type="button" data-close-modal>×</button></div>
-        <div class="alert alert--danger form-error-summary" hidden></div>
-
-        <section class="form-section-card">
-            <h3>Gönderici Bilgileri</h3>
-            <div class="form-grid form-grid--section">
-                <div class="field field--sender-type"><span>Seçim</span><div class="sender-type-cards sender-type-cards--compact"><label><input type="radio" name="sender_type" value="company" <?= ($oldInput['sender_type'] ?? 'company') !== 'person' ? 'checked' : '' ?>><span class="sender-card-icon">F</span><strong>Firma</strong></label><label><input type="radio" name="sender_type" value="person" <?= ($oldInput['sender_type'] ?? 'company') === 'person' ? 'checked' : '' ?>><span class="sender-card-icon">S</span><strong>Şahıs</strong></label></div></div>
-                <label class="field sender-company<?= $fieldClass('company_name') ?>"><span>Firma seçimi</span><input type="search" name="company_name" value="<?= $oldValue('company_name') ?>" list="op-company-list"><input type="hidden" name="company_id" value="<?= $oldValue('company_id') ?>"><small class="field-help js-company-help">Firma adı yazıldığında mevcut kayıtlar önerilir.</small><?= $fieldError('company_name') ?></label>
-                <label class="field sender-company<?= $fieldClass('dispatch_number') ?>"><span>İrsaliye no</span><input type="text" name="dispatch_number" value="<?= $oldValue('dispatch_number') ?>"><?= $fieldError('dispatch_number') ?></label>
-                <label class="field sender-company"><span>Vergi no</span><input type="text" name="sender_tax_number" value="<?= $oldValue('sender_tax_number') ?>"></label>
-                <label class="field sender-person<?= $fieldClass('sender_name') ?>" hidden><span>Ad soyad</span><input type="search" name="sender_name" value="<?= $oldValue('sender_name') ?>" list="op-person-list" disabled><small class="field-help js-person-help">Daha önce gelen şahıslar yazarken önerilir.</small><?= $fieldError('sender_name') ?></label>
-                <label class="field sender-person<?= $fieldClass('identity_number') ?>" hidden><span>TC kimlik no</span><input type="text" name="identity_number" value="<?= $oldValue('identity_number') ?>" maxlength="11" inputmode="numeric" disabled><?= $fieldError('identity_number') ?></label>
-                <label class="field sender-contact"><span>Telefon</span><input type="text" name="sender_phone" value="<?= $oldValue('sender_phone') ?>"></label>
-                <label class="field field--wide sender-contact"><span>Adres</span><textarea name="sender_address" rows="2"><?= $oldValue('sender_address') ?></textarea></label>
-            </div>
-        </section>
-
-        <section class="form-section-card">
-            <h3>Ürün Bilgileri</h3>
-            <div class="form-grid form-grid--section">
-                <label class="field<?= $fieldClass('product_id') ?>"><span>Ürün tipi</span><select name="product_id" required><?php foreach ($products as $product): ?><option value="<?= (int) $product['id'] ?>" <?= (string) ($oldInput['product_id'] ?? '') === (string) $product['id'] ? 'selected' : '' ?>><?= htmlspecialchars((string) $product['name']) ?></option><?php endforeach; ?></select><?= $fieldError('product_id') ?></label>
-                <label class="field<?= $fieldClass('quantity_ton') ?>"><span>Miktar ton</span><input type="number" name="quantity_ton" value="<?= $oldValue('quantity_ton') ?>" min="0" step="0.001" required><?= $fieldError('quantity_ton') ?></label>
-            </div>
-        </section>
-
-        <section class="form-section-card">
-            <h3>Araç Bilgileri</h3>
-            <div class="form-grid form-grid--section">
-                <input type="hidden" name="vehicle_match_action" value="update">
-                <input type="hidden" name="driver_match_action" value="update">
-                <label class="field<?= $fieldClass('plate_number') ?>"><span>Plaka</span><input type="text" name="plate_number" value="<?= $oldValue('plate_number') ?>" required><?= $fieldError('plate_number') ?></label>
-                <label class="field"><span>Araç markası</span><input type="text" name="vehicle_brand" value="<?= $oldValue('vehicle_brand') ?>"></label>
-                <label class="field"><span>Araç modeli</span><input type="text" name="vehicle_model" value="<?= $oldValue('vehicle_model') ?>"></label>
-                <label class="field"><span>Şoför adı</span><input type="text" name="driver_name" value="<?= $oldValue('driver_name') ?>"></label>
-                <label class="field"><span>Şoför telefon</span><input type="text" name="driver_phone" value="<?= $oldValue('driver_phone') ?>"></label>
-                <label class="field"><span>Şoför TC kimlik no</span><input type="text" name="driver_identity_number" value="<?= $oldValue('driver_identity_number') ?>" maxlength="11" inputmode="numeric"></label>
-                <div class="field--wide driver-vehicle-card" data-driver-vehicle-card hidden></div>
-            </div>
-        </section>
-
-        <section class="form-section-card">
-            <h3>Açıklamalar</h3>
-            <div class="form-grid form-grid--section">
-                <label class="field"><span>Giriş tarihi</span><input type="date" name="entry_date" value="<?= $oldValue('entry_date', date('Y-m-d')) ?>"></label>
-                <label class="field field--wide<?= $fieldClass('notes') ?>"><span>Açıklama</span><textarea name="notes" rows="3" required><?= $oldValue('notes') ?></textarea><?= $fieldError('notes') ?></label>
-            </div>
-        </section>
-
-        <div class="form-actions"><button class="button button--primary" type="submit">Giriş Oluştur</button><button class="button button--ghost" type="button" data-close-modal>Vazgeç</button></div>
-    </form>
-</dialog>
-
 <dialog class="app-modal" id="transfer-modal">
     <form action="/incoming-products/start-pre-notified" method="post" class="form-grid">
         <input type="hidden" name="return_to" value="<?= htmlspecialchars($returnTarget) ?>">
@@ -1002,7 +947,7 @@ $flowNavigationPermissionsJson = json_encode([
         <div class="detail-grid field--wide js-transfer-summary"></div>
         <label class="field"><span>Gerçek geliş tarihi</span><input type="date" name="arrival_date" value="<?= date('Y-m-d') ?>"></label>
         <label class="field field--wide"><span>Giriş açıklaması</span><textarea name="entry_notes" rows="3"></textarea></label>
-        <div class="form-actions"><button class="button button--primary" type="submit">Akış Başlat ve Kantar Ekranına Git</button><button class="button button--ghost" type="button" data-close-modal>Vazgeç</button></div>
+        <div class="form-actions"><button class="button button--primary" type="submit">Akış Başlat</button><button class="button button--ghost" type="button" data-close-modal>Vazgeç</button></div>
     </form>
 </dialog>
 
@@ -1135,9 +1080,27 @@ function applyValidation(form, validation) {
     });
 }
 
+function syncProductSilos(form) {
+    const product = form.querySelector('select[name="product_id"]');
+    const silo = form.querySelector('[data-product-silo-select]');
+    if (!product || !silo) return;
+
+    const productId = product.value;
+    [...silo.options].forEach((option) => {
+        if (option.value === '') return;
+        const matches = option.dataset.productId === productId;
+        option.disabled = productId !== '' && !matches;
+        const base = option.textContent.replace(/\s+- bu ürüne uygun değil$/, '');
+        option.textContent = option.disabled ? `${base} - bu ürüne uygun değil` : base;
+    });
+    if (silo.selectedOptions[0]?.disabled) {
+        silo.value = '';
+    }
+}
+
 function syncSenderForm(form) {
     const type = form.querySelector('input[name="sender_type"]:checked')?.value || 'company';
-    const requiresDispatch = form.matches('[action*="incoming-products"], [action*="delivery-notifications"]');
+    const requiresDispatch = form.matches('[action*="incoming-products"]');
     form.querySelectorAll('.sender-company').forEach((el) => {
         el.hidden = type !== 'company';
         el.querySelectorAll('input, textarea, select').forEach((field) => {
@@ -1169,6 +1132,90 @@ function bindSenderLookup(form) {
     const personInput = form.querySelector('input[name="sender_name"]');
     const identity = form.querySelector('input[name="identity_number"]');
     const personHelp = form.querySelector('.js-person-help');
+    const safeSet = (field, value, force = false) => {
+        if (!field) return;
+        const next = value || '';
+        const previousAuto = field.dataset.autoFillValue || '';
+        if (force || field.value.trim() === '' || field.value === previousAuto) {
+            field.value = next;
+            field.dataset.autoFillValue = next;
+        }
+    };
+    const addCompanyOption = (record) => {
+        if (!record?.name) return;
+        if (!opCompanies.some((company) => String(company.id || '') === String(record.id || '') || normalizeOp(company.name) === normalizeOp(record.name))) {
+            opCompanies.push(record);
+        }
+        const list = document.getElementById('op-company-list');
+        if (list && !Array.from(list.options).some((option) => normalizeOp(option.value) === normalizeOp(record.name))) {
+            const option = document.createElement('option');
+            option.value = record.name;
+            list.appendChild(option);
+        }
+    };
+    const addPersonOption = (record) => {
+        if (!record?.sender_name) return;
+        if (!opPeople.some((person) => normalizeOp(person.sender_name) === normalizeOp(record.sender_name))) {
+            opPeople.push(record);
+        }
+        const list = document.getElementById('op-person-list');
+        if (list && !Array.from(list.options).some((option) => normalizeOp(option.value) === normalizeOp(record.sender_name))) {
+            const option = document.createElement('option');
+            option.value = record.sender_name;
+            list.appendChild(option);
+        }
+    };
+    const openCompanyRecordModal = () => {
+        if (!companyInput || form.dataset.senderRecordModal === '1') return;
+        const typed = companyInput.value.trim();
+        if (typed === '' || opCompanies.some((company) => normalizeOp(company.name) === normalizeOp(typed))) return;
+        form.dataset.senderRecordModal = '1';
+        window.openSenderRecordModal?.({
+            type: 'company',
+            initial: {
+                company_name: typed,
+                sender_tax_number: tax?.value || '',
+                sender_phone: phone?.value || '',
+                sender_address: address?.value || '',
+            },
+            onSaved: (record) => {
+                addCompanyOption(record);
+                safeSet(companyInput, record.name, true);
+                safeSet(companyId, record.id, true);
+                safeSet(tax, record.tax_number || '', true);
+                safeSet(phone, record.phone || '', true);
+                safeSet(address, record.address || '', true);
+                if (companyHelp) companyHelp.textContent = 'Yeni firma kaydedildi ve forma aktarıldı.';
+                delete form.dataset.senderRecordModal;
+            },
+        });
+        window.setTimeout(() => delete form.dataset.senderRecordModal, 400);
+    };
+    const openPersonRecordModal = () => {
+        if (!personInput || form.dataset.senderRecordModal === '1') return;
+        const typed = personInput.value.trim();
+        if (typed === '' || opPeople.some((person) => normalizeOp(person.sender_name) === normalizeOp(typed))) return;
+        form.dataset.senderRecordModal = '1';
+        window.openSenderRecordModal?.({
+            type: 'person',
+            initial: {
+                sender_name: typed,
+                identity_number: identity?.value || '',
+                sender_phone: phone?.value || '',
+                sender_address: address?.value || '',
+            },
+            onSaved: (record) => {
+                addPersonOption(record);
+                safeSet(personInput, record.sender_name, true);
+                safeSet(identity, record.identity_number || '', true);
+                safeSet(phone, record.sender_phone || '', true);
+                safeSet(address, record.sender_address || '', true);
+                if (personHelp) personHelp.textContent = 'Yeni şahıs kaydedildi ve forma aktarıldı.';
+                delete form.dataset.senderRecordModal;
+            },
+        });
+        window.setTimeout(() => delete form.dataset.senderRecordModal, 400);
+    };
 
     const syncCompanyMatchState = () => {
         if (!companyInput || !companyId) return;
@@ -1177,31 +1224,35 @@ function bindSenderLookup(form) {
         companyId.value = match?.id || '';
         form.querySelectorAll('.sender-company').forEach((el) => el.classList.toggle('is-new-company', isNewCompany));
         if (match) {
-            if (tax) tax.value = match.tax_number || '';
-            if (phone) phone.value = match.phone || '';
-            if (address) address.value = match.address || '';
+            safeSet(tax, match.tax_number || '');
+            safeSet(phone, match.phone || '');
+            safeSet(address, match.address || '');
             if (companyHelp) companyHelp.textContent = 'Mevcut firma seçildi.';
         } else if (companyHelp) {
             companyHelp.textContent = companyInput.value.trim()
-                ? 'Yeni firma — vergi no, telefon ve adres bilgilerini girin; kayıt sırasında firma kartı oluşturulur.'
+                ? 'Firma bulunamadı. Alandan çıkınca yeni firma kaydı penceresi açılır.'
                 : 'Firma adı yazıldığında mevcut kayıtlar önerilir; listede yoksa yeni firma olarak kaydedilir.';
         }
     };
     companyInput?.addEventListener('input', syncCompanyMatchState);
+    companyInput?.addEventListener('blur', openCompanyRecordModal);
     syncCompanyMatchState();
     personInput?.addEventListener('input', () => {
         const match = opPeople.find((person) => normalizeOp(person.sender_name) === normalizeOp(personInput.value));
         if (match) {
-            identity.value = match.identity_number || '';
-            phone.value = match.sender_phone || '';
-            address.value = match.sender_address || '';
-            personHelp.textContent = 'Mevcut şahıs bilgileri getirildi.';
+            safeSet(identity, match.identity_number || '');
+            safeSet(phone, match.sender_phone || '');
+            safeSet(address, match.sender_address || '');
+            if (personHelp) personHelp.textContent = 'Mevcut şahıs bilgileri getirildi.';
         } else {
-            personHelp.textContent = personInput.value.trim() ? 'Şahıs bulunamadı. Bu girişte yeni şahıs bilgisi kullanılacak.' : 'Daha önce gelen şahıslar yazarken önerilir.';
+            if (personHelp) personHelp.textContent = personInput.value.trim() ? 'Şahıs bulunamadı. Alandan çıkınca yeni şahıs kaydı penceresi açılır.' : 'Daha önce gelen şahıslar yazarken önerilir.';
         }
     });
+    personInput?.addEventListener('blur', openPersonRecordModal);
     identity?.addEventListener('input', () => identity.value = identity.value.replace(/\D+/g, '').slice(0, 11));
     syncSenderForm(form);
+    syncProductSilos(form);
+    form.querySelector('select[name="product_id"]')?.addEventListener('change', () => syncProductSilos(form));
 }
 
 function fillNotificationForm(record = null) {
@@ -1296,11 +1347,6 @@ document.querySelectorAll('[data-edit-notification]').forEach((button) => button
     fillNotificationForm(findRecord(button.dataset.editNotification));
     openDialog('notification-modal');
 }));
-document.querySelectorAll('[data-open-modal="direct-entry-modal"]').forEach((button) => button.addEventListener('click', () => {
-    const form = document.querySelector('#direct-entry-modal form');
-    resetFormState(form);
-    openDialog('direct-entry-modal');
-}));
 document.querySelectorAll('[data-open-transfer]').forEach((button) => button.addEventListener('click', (event) => {
     event.stopPropagation();
     const record = findRecord(button.dataset.openTransfer);
@@ -1371,6 +1417,17 @@ document.addEventListener('change', (event) => {
         if (form) syncSenderForm(form);
     }
 });
+const operationFocus = new URLSearchParams(window.location.search).get('focus');
+if (operationFocus) {
+    const focusCard = document.querySelector(`[data-focus-id="${CSS.escape(operationFocus)}"]`);
+    if (focusCard) {
+        setTimeout(() => {
+            focusCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            focusCard.classList.add('operation-focus-highlight');
+            setTimeout(() => focusCard.classList.remove('operation-focus-highlight'), 2600);
+        }, 140);
+    }
+}
 if (Object.keys(opValidation.errors || {}).length > 0) {
     const oldInput = opValidation.old || {};
     if (oldInput.planned_quantity_kg !== undefined) {
@@ -1381,19 +1438,25 @@ if (Object.keys(opValidation.errors || {}).length > 0) {
             applyValidation(outboundForm, opValidation);
             document.getElementById('outbound-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
+    } else if (oldInput.quantity_ton !== undefined) {
+        const form = document.querySelector('.operation-form-card .js-direct-form');
+        if (form) {
+            setFormValues(form, oldInput);
+            syncSenderForm(form);
+            applyValidation(form, opValidation);
+            form.closest('.operation-form-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
     } else {
-        const targetModal = oldInput.quantity_ton !== undefined ? 'direct-entry-modal' : 'notification-modal';
+        const targetModal = 'notification-modal';
         const form = document.querySelector(`#${targetModal} form`);
-        if (targetModal === 'notification-modal') {
+        if (form) {
             const record = oldInput.id ? findRecord(oldInput.id) : null;
             fillNotificationForm(record);
-        } else {
-            resetFormState(form);
+            setFormValues(form, oldInput);
+            syncSenderForm(form);
+            applyValidation(form, opValidation);
+            openDialog(targetModal);
         }
-        setFormValues(form, oldInput);
-        syncSenderForm(form);
-        applyValidation(form, opValidation);
-        openDialog(targetModal);
     }
 }
 </script>

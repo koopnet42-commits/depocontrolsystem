@@ -144,7 +144,7 @@ final class SiloRuleController extends Controller
     private function silos(): array
     {
         return Database::connection()
-            ->query('SELECT id, code, name FROM silos WHERE is_active = 1 ORDER BY code ASC')
+            ->query('SELECT id, code, name, product_id FROM silos WHERE is_active = 1 ORDER BY code ASC')
             ->fetchAll();
     }
 
@@ -176,9 +176,22 @@ final class SiloRuleController extends Controller
 
     private function requiredFieldsAreValid(): bool
     {
+        $productId = (int) $this->input('product_id');
+        $siloId = (int) $this->input('silo_id');
+
         return trim((string) $this->input('name')) !== ''
-            && (int) $this->input('product_id') > 0
-            && (int) $this->input('silo_id') > 0;
+            && $productId > 0
+            && $siloId > 0
+            && $this->siloMatchesProduct($siloId, $productId);
+    }
+
+    private function siloMatchesProduct(int $siloId, int $productId): bool
+    {
+        $statement = Database::connection()->prepare('SELECT product_id FROM silos WHERE id = :id AND is_active = 1 LIMIT 1');
+        $statement->execute(['id' => $siloId]);
+        $siloProductId = $statement->fetchColumn();
+
+        return $siloProductId !== false && (int) $siloProductId === $productId;
     }
 
     private function emptyRule(): array

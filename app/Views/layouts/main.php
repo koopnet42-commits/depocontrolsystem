@@ -45,6 +45,70 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
                 <?php require $viewPath; ?>
             </main>
             <?php require BASE_PATH . '/app/Views/components/vehicle_process_modal.php'; ?>
+            <div class="modal-backdrop sender-record-backdrop" data-sender-record-backdrop hidden></div>
+            <dialog class="app-modal sender-record-modal" id="sender-record-modal">
+                <form class="sender-record-form" data-sender-record-form>
+                    <div class="modal-header">
+                        <div>
+                            <h2 data-sender-record-title>Yeni kayıt</h2>
+                            <p data-sender-record-subtitle>Bilgileri kaydedince ana forma otomatik aktarılır.</p>
+                        </div>
+                        <button class="modal-close" type="button" data-sender-record-close aria-label="Kapat">&times;</button>
+                    </div>
+                    <input type="hidden" name="type" value="company">
+                    <div class="sender-record-type">
+                        <label>
+                            <input type="radio" name="record_type_choice" value="company">
+                            <span>Firma</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="record_type_choice" value="person">
+                            <span>Şahıs</span>
+                        </label>
+                    </div>
+                    <div class="sender-record-alert" data-sender-record-error hidden></div>
+                    <div class="sender-record-grid" data-sender-company-fields>
+                        <label class="field">
+                            <span>Firma adı</span>
+                            <input type="text" name="company_name" maxlength="180">
+                        </label>
+                        <label class="field">
+                            <span>Vergi no</span>
+                            <input type="text" name="sender_tax_number" maxlength="40">
+                        </label>
+                        <label class="field">
+                            <span>Telefon</span>
+                            <input type="text" name="sender_phone" maxlength="40">
+                        </label>
+                        <label class="field field--wide">
+                            <span>Adres</span>
+                            <textarea name="sender_address" rows="3"></textarea>
+                        </label>
+                    </div>
+                    <div class="sender-record-grid" data-sender-person-fields hidden>
+                        <label class="field">
+                            <span>Ad soyad</span>
+                            <input type="text" name="sender_name" maxlength="180">
+                        </label>
+                        <label class="field">
+                            <span>TC kimlik no</span>
+                            <input type="text" name="identity_number" maxlength="11" inputmode="numeric">
+                        </label>
+                        <label class="field">
+                            <span>Telefon</span>
+                            <input type="text" name="person_phone" maxlength="40">
+                        </label>
+                        <label class="field field--wide">
+                            <span>Adres</span>
+                            <textarea name="person_address" rows="3"></textarea>
+                        </label>
+                    </div>
+                    <div class="form-actions">
+                        <button class="button button--primary" type="submit">Kaydet ve Forma Aktar</button>
+                        <button class="button button--ghost" type="button" data-sender-record-close>Vazgeç</button>
+                    </div>
+                </form>
+            </dialog>
         </div>
     </div>
 <?php endif; ?>
@@ -84,6 +148,97 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
                 return;
             }
         };
+        const senderModal = document.getElementById('sender-record-modal');
+        const senderBackdrop = document.querySelector('[data-sender-record-backdrop]');
+        const senderForm = document.querySelector('[data-sender-record-form]');
+        let senderSavedCallback = null;
+
+        const senderSetType = (type) => {
+            if (!senderForm) return;
+            const nextType = type === 'person' ? 'person' : 'company';
+            senderForm.elements.type.value = nextType;
+            senderForm.querySelectorAll('[name="record_type_choice"]').forEach((input) => {
+                input.checked = input.value === nextType;
+            });
+            senderForm.querySelector('[data-sender-company-fields]').hidden = nextType !== 'company';
+            senderForm.querySelector('[data-sender-person-fields]').hidden = nextType !== 'person';
+            senderForm.querySelector('[data-sender-record-title]').textContent = nextType === 'company' ? 'Yeni Firma Kaydı' : 'Yeni Şahıs Kaydı';
+            senderForm.querySelector('[data-sender-record-subtitle]').textContent = nextType === 'company'
+                ? 'Firma kartını kaydedince seçili forma aktarılır.'
+                : 'Şahıs kartını kaydedince seçili forma aktarılır.';
+        };
+        const senderClose = () => {
+            senderBackdrop?.setAttribute('hidden', '');
+            senderModal?.close();
+            senderSavedCallback = null;
+        };
+
+        window.openSenderRecordModal = ({type = 'company', initial = {}, onSaved = null} = {}) => {
+            if (!senderModal || !senderForm) return;
+            senderSavedCallback = typeof onSaved === 'function' ? onSaved : null;
+            senderForm.reset();
+            senderForm.querySelector('[data-sender-record-error]').hidden = true;
+            senderSetType(type);
+            senderForm.elements.company_name.value = initial.company_name || '';
+            senderForm.elements.sender_tax_number.value = initial.sender_tax_number || '';
+            senderForm.elements.sender_phone.value = initial.sender_phone || '';
+            senderForm.elements.sender_address.value = initial.sender_address || '';
+            senderForm.elements.sender_name.value = initial.sender_name || '';
+            senderForm.elements.identity_number.value = initial.identity_number || '';
+            senderForm.elements.person_phone.value = initial.sender_phone || '';
+            senderForm.elements.person_address.value = initial.sender_address || '';
+            senderBackdrop?.removeAttribute('hidden');
+            senderModal.showModal();
+            window.setTimeout(() => {
+                const first = senderForm.querySelector(type === 'person' ? '[name="sender_name"]' : '[name="company_name"]');
+                first?.focus();
+                first?.select?.();
+            }, 50);
+        };
+        senderForm?.querySelectorAll('[name="record_type_choice"]').forEach((input) => {
+            input.addEventListener('change', () => senderSetType(input.value));
+        });
+        senderForm?.elements.identity_number?.addEventListener('input', () => {
+            senderForm.elements.identity_number.value = senderForm.elements.identity_number.value.replace(/\D+/g, '').slice(0, 11);
+        });
+        senderForm?.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const error = senderForm.querySelector('[data-sender-record-error]');
+            error.hidden = true;
+            const type = senderForm.elements.type.value === 'person' ? 'person' : 'company';
+            const data = new FormData();
+            data.set('type', type);
+            if (type === 'person') {
+                data.set('sender_name', senderForm.elements.sender_name.value.trim());
+                data.set('identity_number', senderForm.elements.identity_number.value.trim());
+                data.set('sender_phone', senderForm.elements.person_phone.value.trim());
+                data.set('sender_address', senderForm.elements.person_address.value.trim());
+            } else {
+                data.set('company_name', senderForm.elements.company_name.value.trim());
+                data.set('sender_tax_number', senderForm.elements.sender_tax_number.value.trim());
+                data.set('sender_phone', senderForm.elements.sender_phone.value.trim());
+                data.set('sender_address', senderForm.elements.sender_address.value.trim());
+            }
+
+            fetch('/sender-records/store', {method: 'POST', body: data, headers: {'Accept': 'application/json'}})
+                .then((response) => response.json().then((payload) => ({ok: response.ok, payload})))
+                .then(({ok, payload}) => {
+                    if (!ok || !payload.ok) {
+                        error.textContent = payload.message || 'Kayıt tamamlanamadı.';
+                        error.hidden = false;
+                        return;
+                    }
+                    const callback = senderSavedCallback;
+                    senderClose();
+                    callback?.(payload.record, payload.type);
+                })
+                .catch(() => {
+                    error.textContent = 'Bağlantı hatası. Kayıt tamamlanamadı.';
+                    error.hidden = false;
+                });
+        });
+        document.querySelectorAll('[data-sender-record-close]').forEach((button) => button.addEventListener('click', senderClose));
+        senderBackdrop?.addEventListener('click', senderClose);
 
         document.querySelectorAll('[data-menu-group]').forEach((group) => {
             const key = `depo.menu.${group.dataset.menuGroup}`;
@@ -177,6 +332,24 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
             if (!field || (onlyEmpty && field.value.trim() !== '')) return;
             field.value = value || '';
         };
+        const setMatchedField = (form, name, value, force = false) => {
+            const field = form.elements[name];
+            if (!field) return;
+            const next = value || '';
+            const previousAuto = field.dataset.autoFillValue || '';
+            if (force || field.value.trim() === '' || field.value === previousAuto) {
+                field.value = next;
+                field.dataset.autoFillValue = next;
+            }
+        };
+        const differentFromRecord = (form, name, recordValue) => {
+            const current = fieldValue(form, name);
+            const previousAuto = form.elements[name]?.dataset.autoFillValue || '';
+            const expected = String(recordValue || '').trim();
+            if (expected === '' || current === '' || current === previousAuto) return false;
+
+            return current.toLocaleLowerCase('tr-TR') !== expected.toLocaleLowerCase('tr-TR');
+        };
         const conflict = (a, b) => String(a || '').trim() !== '' && String(b || '').trim() !== '' && String(a || '').trim().toLocaleLowerCase('tr-TR') !== String(b || '').trim().toLocaleLowerCase('tr-TR');
         const historyLine = (item, type) => {
             if (!item || Object.keys(item).length === 0) return '';
@@ -189,12 +362,15 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
             form.elements[`${group}_match_action`].value = action;
             if (action === 'old') {
                 if (group === 'vehicle') {
-                    setField(form, 'vehicle_brand', data?.brand);
-                    setField(form, 'vehicle_model', data?.model);
+                    setMatchedField(form, 'vehicle_brand', data?.brand, true);
+                    setMatchedField(form, 'vehicle_model', data?.model, true);
+                    setMatchedField(form, 'driver_name', data?.driver_name, true);
+                    setMatchedField(form, 'driver_phone', data?.driver_phone, true);
+                    setMatchedField(form, 'driver_identity_number', data?.driver_identity_number, true);
                 } else {
-                    setField(form, 'driver_name', data?.full_name);
-                    setField(form, 'driver_phone', data?.phone);
-                    setField(form, 'driver_identity_number', data?.identity_number);
+                    setMatchedField(form, 'driver_name', data?.full_name, true);
+                    setMatchedField(form, 'driver_phone', data?.phone, true);
+                    setMatchedField(form, 'driver_identity_number', data?.identity_number, true);
                 }
             }
             form.querySelector(`[data-${group}-warning]`)?.remove();
@@ -208,9 +384,12 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
             form.dataset.vehicleResolved = '1';
             form.dataset.driverResolved = '1';
             if (vehicle) {
-                setField(form, 'vehicle_brand', vehicle.brand, true);
-                setField(form, 'vehicle_model', vehicle.model, true);
-                const changed = conflict(fieldValue(form, 'vehicle_brand'), vehicle.brand) || conflict(fieldValue(form, 'vehicle_model'), vehicle.model);
+                setMatchedField(form, 'vehicle_brand', vehicle.brand);
+                setMatchedField(form, 'vehicle_model', vehicle.model);
+                setMatchedField(form, 'driver_name', vehicle.driver_name);
+                setMatchedField(form, 'driver_phone', vehicle.driver_phone);
+                setMatchedField(form, 'driver_identity_number', vehicle.driver_identity_number);
+                const changed = differentFromRecord(form, 'vehicle_brand', vehicle.brand) || differentFromRecord(form, 'vehicle_model', vehicle.model);
                 if (changed) {
                     form.dataset.vehicleResolved = '0';
                     form.elements.vehicle_match_action.value = '';
@@ -218,16 +397,17 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
                 blocks.push(`<div class="match-card__block ${changed ? 'match-card__block--warn' : ''}" ${changed ? 'data-vehicle-warning' : ''}>
                     <strong>Plaka kaydı bulundu: ${vehicle.plate_number || vehicle.normalized_plate}</strong>
                     <span>Araç: ${vehicle.brand || '-'} ${vehicle.model || ''}</span>
+                    <span>Son şoför: ${vehicle.driver_name || vehicle.history?.driver_name || '-'}</span>
                     ${historyLine(vehicle.history, 'vehicle')}
                     ${changed ? '<p>Bu plaka için girilen araç bilgisi kayıtlı bilgiden farklı. Nasıl devam edilsin?</p>' : ''}
                     ${changed ? '<div class="match-card__actions"><button type="button" data-match-choice="vehicle:old">Eski Bilgiyi Kullan</button><button type="button" data-match-choice="vehicle:update">Yeni Bilgiyle Güncelle</button><button type="button" data-match-choice="vehicle:once">Sadece Bu İşlem İçin Kullan</button></div>' : ''}
                 </div>`);
             }
             if (driver) {
-                setField(form, 'driver_name', driver.full_name, true);
-                setField(form, 'driver_phone', driver.phone, true);
-                setField(form, 'driver_identity_number', driver.identity_number, true);
-                const changed = conflict(fieldValue(form, 'driver_name'), driver.full_name) || conflict(fieldValue(form, 'driver_phone'), driver.phone) || conflict(fieldValue(form, 'driver_identity_number'), driver.identity_number);
+                setMatchedField(form, 'driver_name', driver.full_name);
+                setMatchedField(form, 'driver_phone', driver.phone);
+                setMatchedField(form, 'driver_identity_number', driver.identity_number);
+                const changed = differentFromRecord(form, 'driver_name', driver.full_name) || differentFromRecord(form, 'driver_phone', driver.phone) || differentFromRecord(form, 'driver_identity_number', driver.identity_number);
                 if (changed) {
                     form.dataset.driverResolved = '0';
                     form.elements.driver_match_action.value = '';
@@ -384,6 +564,99 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
 
             return actions[index] || null;
         };
+        const currentStepIndexFor = (record) => Math.max(0, flowSteps.findIndex(([, statuses]) => statuses.includes(record.status)));
+        const vehicleActionFor = (record) => {
+            const entryId = Number(record.entry_id || record.id || 0);
+            const recordId = Number(record.weighbridge_record_id || 0);
+            const plate = encodeURIComponent(record.plate_number || '');
+            const entryQuery = entryId ? `entry_id=${entryId}&entryId=${entryId}` : '';
+            const plateQuery = plate ? `plate=${plate}` : '';
+            const parts = (...items) => items.filter(Boolean).join('&');
+            const withQuery = (path, query) => query ? `${path}?${query}` : path;
+            const status = record.status || '';
+            const repairHref = withQuery('/process-repair', parts(plateQuery, entryQuery));
+            const correctionHref = entryId ? withQuery('/delivery-notifications/edit', parts(`id=${entryId}`, 'return_to=vehicle_process', `vehicle_step=${Math.max(0, currentStepIndexFor(record))}`)) : '';
+
+            if (['pending', 'ürün_bildirimi'].includes(status)) {
+                return {
+                    title: 'Sıradaki işlem: araç gelişini başlat',
+                    text: 'Araç geldiyse akışı Ürün İşlemleri ekranından başlatın. Başlamadıysa bu kayıt bekleyen listede kalır.',
+                    label: 'Ürün İşlemlerine Git',
+                    href: withQuery('/product-operations/entry', parts('mode=inbound_pre', entryQuery)),
+                    repairHref,
+                    correctionHref,
+                };
+            }
+            if (['kantara_geldi', 'giriş_bariyeri_açıldı', 'kantarda', 'at_weighbridge'].includes(status)) {
+                return {
+                    title: 'Sıradaki işlem: kantar girişi ve 1. tartım',
+                    text: 'Bu araç kantar aşamasında. Hatalı araç seçildiyse kantar ekranındaki Geri Al işlemini kullanabilirsiniz.',
+                    label: 'Kantar Ekranına Git',
+                    href: withQuery('/weighbridge-entry', parts(plateQuery, entryQuery, 'vehicle_step=1')),
+                    repairHref,
+                    correctionHref,
+                };
+            }
+            if (['ilk_tartım_alındı', 'analiz_bekliyor', 'analizde', 'in_analysis'].includes(status)) {
+                return {
+                    title: 'Sıradaki işlem: analiz kaydı',
+                    text: '1. tartım alınmış. Numune/analiz sonucu girildikten sonra silo yönlendirme aşaması açılır.',
+                    label: 'Analiz Ekranına Git',
+                    href: recordId ? `/sample-analysis/edit?record_id=${recordId}&${entryQuery}` : withQuery('/sample-analysis', parts(plateQuery, entryQuery)),
+                    repairHref,
+                    correctionHref,
+                };
+            }
+            if (['analiz_yapıldı', 'silo_belirlendi', 'barkod_bekliyor'].includes(status)) {
+                return {
+                    title: 'Sıradaki işlem: barkod ve silo yönlendirme',
+                    text: 'Analiz tamamlandı. Ürüne uygun silo seçilip barkod basılınca araç 2. tartım kuyruğuna düşer.',
+                    label: 'Barkod Ekranına Git',
+                    href: recordId ? `/barcode-tickets?record_id=${recordId}&${entryQuery}` : withQuery('/barcode-tickets', parts(entryQuery)),
+                    repairHref,
+                    correctionHref,
+                };
+            }
+            if (['barkod_basıldı', 'siloya_yönlendirildi', 'boşaltımda', 'ikinci_tartım_bekliyor', 'unloaded'].includes(status)) {
+                return {
+                    title: 'Sıradaki işlem: 2. tartım',
+                    text: 'Araç siloya yönlendirilmiş durumda. Boş araç geri geldiğinde ikinci tartımı alabilirsiniz.',
+                    label: '2. Tartıma Git',
+                    href: withQuery('/second-weighing', parts(plateQuery, entryQuery, recordId ? `record_id=${recordId}` : '')),
+                    repairHref,
+                    correctionHref,
+                };
+            }
+            if (['tamamlandı'].includes(status)) {
+                return {
+                    title: 'Süreç tamamlandı',
+                    text: 'Bu araç için operasyon kapandı. Detay ve geçmiş bilgileri burada görüntülenebilir.',
+                    label: '',
+                    href: '',
+                    repairHref,
+                    correctionHref,
+                };
+            }
+            if (['iptal', 'ret', 'alıma_girmedi'].includes(status)) {
+                return {
+                    title: 'Süreç kapalı',
+                    text: 'Bu kayıt aktif işlem listesine dönmez. İptal/ret bilgisi ve geçmiş kayıtları görüntülenebilir.',
+                    label: '',
+                    href: '',
+                    repairHref,
+                    correctionHref,
+                };
+            }
+
+            return {
+                title: 'Sıradaki işlem belirsiz',
+                text: 'Araç durumunu kontrol edin. Gerekirse süreç onarım ekranından yöneticinin düzeltme yapması gerekir.',
+                label: 'Süreç Onarımına Git',
+                href: repairHref,
+                repairHref,
+                correctionHref,
+            };
+        };
         const analysisStateClass = (record) => {
             if (record.status === 'ret' || record.status === 'alıma_girmedi' || record.analysis_result === 'rejected' || record.result_status === 'ret') {
                 return 'analysis-state-row--rejected';
@@ -398,6 +671,14 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
             const isRejected = record.status === 'ret' || record.status === 'alıma_girmedi';
             const delayed = isDelayedRecord(record);
             const cancelled = ['iptal', 'cancelled'].includes(record?.status || '');
+            const action = vehicleActionFor(record);
+            const historyItems = record.history || [];
+            const lastHistory = historyItems.length > 0 ? historyItems[historyItems.length - 1] : null;
+            const actionLinks = [
+                action.correctionHref ? `<a class="button button--small" href="${esc(action.correctionHref)}">Kayıt Bilgilerini Düzelt</a>` : '',
+                action.href && action.label ? `<a class="button button--small button--primary" href="${esc(action.href)}">${esc(action.label)}</a>` : '',
+                action.repairHref && !['tamamlandı', 'iptal', 'ret', 'alıma_girmedi'].includes(record.status || '') ? `<a class="button button--small button--ghost" href="${esc(action.repairHref)}">Hatalıysa Düzelt</a>` : '',
+            ].filter(Boolean).join('');
             const cancelledWarning = cancelled ? `
                 <div class="cancel-detail-banner field--wide">
                     <strong>Bu ön bildirim iptal edildi.</strong>
@@ -425,10 +706,10 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
                     <span>Son not: ${esc(record.company_notified_note || record.notification_note || '-')}</span>
                 </div>
             ` : '';
-            const currentIndex = isRejected ? 3 : Math.max(0, flowSteps.findIndex(([, statuses]) => statuses.includes(record.status)));
+            const currentIndex = isRejected ? 3 : currentStepIndexFor(record);
             const selectedStep = activeStep ?? currentIndex;
             const detailBlocks = [
-                ['Bildirim', `Bildirim no: ${esc(record.notification_number)}<br>Giriş: ${esc(record.created_at)}<br>Bildirim miktarı: ${esc(ton(record.expected_quantity_kg))}`],
+                ['Bildirim', `Bildirim no: ${esc(record.notification_number)}<br>Giriş: ${esc(record.created_at)}<br>Bildirim miktarı: ${esc(kgWithTon(record.expected_quantity_kg))}`],
                 ['Kantar Giriş', `Kantar fişi: ${esc(record.weighbridge_ticket)}<br>Aktif durum: ${esc(labels[record.status] || record.status)}`],
                 ['1. Tartım', `İlk tartım: ${esc(kgWithTon(record.first_weight_kg))}<br>Zaman: ${esc(record.first_weighed_at)}`],
                 ['Analiz', `Sonuç: ${esc(record.analysis_result)}<br>Rutubet: ${esc(record.moisture)} / Hektolitre: ${esc(record.hectoliter)}<br>Yabancı madde: ${esc(record.foreign_material)} / Protein: ${esc(record.protein)}${record.analysis_result === 'conditional' ? `<br>Şartlı kabul sebebi: ${esc(conditionalReason(record.conditional_reason))}<br>Şartlı kabul açıklaması: ${esc(record.conditional_note || '-')}` : ''}${isRejected ? `<br>Ret sebebi: ${esc(rejectionReason(record.rejection_reason))}<br>Açıklama: ${esc(record.rejection_note)}${record.analysis_id ? `<br><a class="button button--small" href="/sample-analysis/rejection-print?analysis_id=${Number(record.analysis_id)}">Ret Fişi Yazdır</a>` : ''}` : ''}`],
@@ -459,12 +740,25 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
                     <div><span>Şoför</span><strong>${esc(record.driver_name)}</strong></div>
                     <div><span>Mevcut durum</span><strong>${esc(labels[record.status] || record.status)}</strong></div>
                     <div><span>Giriş tarihi</span><strong>${esc(record.expected_arrival_date || record.created_at)}</strong></div>
-                    <div><span>Bildirilen miktar</span><strong>${esc(ton(record.expected_quantity_kg))}</strong></div>
+                    <div><span>Bildirilen miktar</span><strong>${esc(kgWithTon(record.expected_quantity_kg))}</strong></div>
                     <div><span>İlk tartım</span><strong>${esc(kgWithTon(record.first_weight_kg))}</strong></div>
                     <div><span>İkinci tartım</span><strong>${esc(kgWithTon(record.second_weight_kg))}</strong></div>
                     <div><span>Net miktar</span><strong>${esc(kgWithTon(record.net_weight_kg))}</strong></div>
                     <div><span>Atanan silo</span><strong>${esc((record.silo_code || '-') + ' - ' + (record.silo_name || '-'))}</strong></div>
                     <div><span>Ticket</span><strong>${esc(record.barcode)}</strong></div>
+                </div>
+                <div class="vehicle-operation-focus">
+                    <div>
+                        <span>Son onay</span>
+                        <strong>${esc(lastHistory ? lastHistory.action_name : 'Henüz işlem kaydı yok')}</strong>
+                        <small>${esc(lastHistory ? `${lastHistory.created_at} / ${labels[lastHistory.new_status] || lastHistory.new_status}` : 'Araç süreci başlatılınca burada görünür.')}</small>
+                    </div>
+                    <div>
+                        <span>Aktif işlem</span>
+                        <strong>${esc(action.title)}</strong>
+                        <small>${esc(action.text)}</small>
+                    </div>
+                    <div class="vehicle-operation-focus__actions">${actionLinks || '<span class="table-muted">Bu kayıt için aktif işlem yok.</span>'}</div>
                 </div>
                 <div class="flow-diagram vehicle-flow">${flow}</div>
                 <div class="vehicle-step-detail"><h3>${esc(detailBlocks[selectedStep][0])}</h3><p>${detailBlocks[selectedStep][1]}</p></div>
@@ -532,6 +826,7 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
                         <div><span>1. tartım</span><strong>${esc(kgWithTon(record.first_weight_kg))}</strong></div>
                         <div><span>2. tartım</span><strong>${esc(kgWithTon(record.second_weight_kg))}</strong></div>
                         <div><span>Net çıkış</span><strong>${esc(kgWithTon(record.net_quantity_kg))}</strong></div>
+                        <div><span>Çıkış barkodu</span><strong>${esc(record.outbound_barcode || '-')}</strong></div>
                     </div>
                     <div class="flow-diagram vehicle-flow vehicle-flow--outbound">${flow}</div>
                     <div class="vehicle-step-detail"><h3>${esc(outboundFlowSteps[selectedStep])}</h3><p>${esc(outboundLabels[record.status] || record.status)}</p>${actionLink}</div>
@@ -658,6 +953,13 @@ $activeOperationStage = $operationStages[$currentPath] ?? null;
             vehicleModal.close();
             vehicleBackdrop.hidden = true;
         });
+
+        const initialParams = new URLSearchParams(window.location.search);
+        const initialEntryId = initialParams.get('entry_id') || initialParams.get('entryId');
+        if (initialParams.get('process_focus') === '1' && initialEntryId && vehicleModal && vehicleBackdrop && vehicleContent) {
+            const initialStep = initialParams.get('vehicle_step');
+            window.openVehicleProcessDetail(initialEntryId, initialStep === null ? null : Number(initialStep));
+        }
 
         const firstInvalidField = document.querySelector('.field--error input:not([disabled]), .field--error select:not([disabled]), .field--error textarea:not([disabled])');
         if (firstInvalidField) {

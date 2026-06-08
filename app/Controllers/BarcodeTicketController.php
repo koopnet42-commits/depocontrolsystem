@@ -38,7 +38,11 @@ final class BarcodeTicketController extends Controller
         }
 
         if ((int) ($record['assigned_silo_id'] ?? 0) <= 0) {
-            $this->redirect('/barcode-tickets?message=missing_silo&record_id=' . (int) $this->input('record_id'));
+            $this->redirect('/barcode-tickets?message=missing_silo&record_id=' . (int) $this->input('record_id') . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=4');
+        }
+
+        if (! $this->siloMatchesProduct((int) $record['assigned_silo_id'], (int) $record['product_id'])) {
+            $this->redirect('/barcode-tickets?message=silo_product_mismatch&record_id=' . (int) $this->input('record_id') . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=4');
         }
 
         $ticket = $this->findTicketByRecord((int) $record['weighbridge_record_id']);
@@ -68,7 +72,7 @@ final class BarcodeTicketController extends Controller
         VehicleProcessHistory::changeStatus((int) $record['delivery_notification_id'], 'siloya_yönlendirildi', 'Siloya yönlendirildi', 'Barkod basıldı, araç hedef siloya yönlendirildi.');
         VehicleProcessHistory::changeStatus((int) $record['delivery_notification_id'], 'ikinci_tartım_bekliyor', 'İkinci tartım bekliyor', 'Silo boşaltımı harici operasyon olarak yönetilecek; araç ikinci tartım kuyruğuna alındı.');
 
-        $this->redirect('/barcode-tickets/print?record_id=' . (int) $record['weighbridge_record_id']);
+        $this->redirect('/barcode-tickets/print?record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id']);
     }
 
     public function assignSilo(): void
@@ -80,13 +84,17 @@ final class BarcodeTicketController extends Controller
             $this->redirect('/barcode-tickets?message=missing_silo');
         }
 
+        if (! $this->siloMatchesProduct($siloId, (int) $record['product_id'])) {
+            $this->redirect('/barcode-tickets?message=silo_product_mismatch&record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=4');
+        }
+
         Database::connection()
             ->prepare('UPDATE weighbridge_records SET assigned_silo_id = :silo_id, status = "silo_assigned" WHERE id = :id')
             ->execute(['id' => (int) $record['weighbridge_record_id'], 'silo_id' => $siloId]);
         VehicleProcessHistory::record((int) $record['delivery_notification_id'], (string) $record['delivery_status'], 'silo_belirlendi', 'Manuel silo seçildi');
         VehicleProcessHistory::changeStatus((int) $record['delivery_notification_id'], 'barkod_bekliyor', 'Barkod bekliyor');
 
-        $this->redirect('/barcode-tickets?message=manual_assigned');
+        $this->redirect('/barcode-tickets?message=manual_assigned&record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=5&process_focus=1');
     }
 
     public function print(): void
@@ -137,6 +145,7 @@ final class BarcodeTicketController extends Controller
                 wr.delivery_notification_id,
                 wr.first_weight_kg,
                 wr.first_weighed_at,
+                wr.product_id,
                 wr.assigned_silo_id,
                 c.name AS company_name,
                 p.name AS product_name,
@@ -144,6 +153,7 @@ final class BarcodeTicketController extends Controller
                 v.driver_name,
                 s.code AS silo_code,
                 s.name AS silo_name,
+                s.product_id AS silo_product_id,
                 sa.id AS analysis_id,
                 sa.analyzed_at,
                 dn.status AS delivery_status,
@@ -175,6 +185,7 @@ final class BarcodeTicketController extends Controller
             'SELECT
                 wr.id AS weighbridge_record_id,
                 wr.delivery_notification_id,
+                wr.product_id,
                 wr.assigned_silo_id,
                 c.name AS company_name,
                 s.code AS silo_code,
@@ -256,7 +267,7 @@ final class BarcodeTicketController extends Controller
     private function findBarcodeCandidate(int $recordId): ?array
     {
         $statement = Database::connection()->prepare(
-            'SELECT wr.id AS weighbridge_record_id, wr.delivery_notification_id, dn.status AS delivery_status
+            'SELECT wr.id AS weighbridge_record_id, wr.delivery_notification_id, wr.product_id, dn.status AS delivery_status
              FROM weighbridge_records wr
              INNER JOIN sample_analysis sa ON sa.weighbridge_record_id = wr.id
              INNER JOIN delivery_notifications dn ON dn.id = wr.delivery_notification_id
@@ -320,8 +331,27 @@ final class BarcodeTicketController extends Controller
     private function silos(): array
     {
         return Database::connection()
-            ->query('SELECT id, code, name FROM silos WHERE is_active = 1 ORDER BY code ASC')
+            ->query(
+                'SELECT s.id, s.code, s.name, s.product_id, p.name AS product_name
+                 FROM silos s
+                 LEFT JOIN products p ON p.id = s.product_id
+                 WHERE s.is_active = 1
+                 ORDER BY p.name ASC, s.code ASC'
+            )
             ->fetchAll();
+    }
+
+    private function siloMatchesProduct(int $siloId, int $productId): bool
+    {
+        if ($siloId <= 0 || $productId <= 0) {
+            return false;
+        }
+
+        $statement = Database::connection()->prepare('SELECT product_id FROM silos WHERE id = :id AND is_active = 1 LIMIT 1');
+        $statement->execute(['id' => $siloId]);
+        $siloProductId = $statement->fetchColumn();
+
+        return $siloProductId !== false && (int) $siloProductId === $productId;
     }
 
     private function uniqueTicketCode(array $record): string

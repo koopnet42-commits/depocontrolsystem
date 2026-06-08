@@ -10,6 +10,7 @@ use App\Core\Database;
 use App\Services\AuditLogger;
 use App\Services\DriverVehicleRegistry;
 use App\Services\PlateReaderService;
+use App\Services\SenderPersonRegistry;
 use App\Services\OutboundProcessHistory;
 use App\Services\OutboundProcessService;
 use App\Services\VehicleProcessHistory;
@@ -42,12 +43,19 @@ final class IncomingProductController extends Controller
 
     public function productOperations(): void
     {
-        $this->productPreNotifications();
+        $this->renderProductOperations('entry');
     }
 
     public function productPreNotifications(): void
     {
-        $this->renderProductOperations('pre_notifications');
+        $message = trim((string) $this->input('message', ''));
+        $target = '/product-operations/entry?mode=inbound_pre';
+
+        if ($message !== '') {
+            $target .= '&message=' . urlencode($message);
+        }
+
+        $this->redirect($target);
     }
 
     public function productEntry(): void
@@ -102,17 +110,34 @@ final class IncomingProductController extends Controller
             $this->redirect($this->incomingReturnTo('/incoming-products?message=not_found', 'already_transferred'));
         }
 
+        $dispatchNumber = $this->nullableInput('dispatch_number') ?? ($notification['dispatch_number'] ?? null);
+        if (($notification['sender_type'] ?? 'company') === 'company' && trim((string) $dispatchNumber) === '') {
+            $invalidReturn = '/incoming-products?message=invalid&notification_id=' . (int) $notification['id'] . '&q=' . urlencode((string) ($notification['plate_number'] ?? ''));
+            $this->redirectWithValidation($this->incomingReturnTo($invalidReturn, 'invalid'), [
+                'dispatch_number' => 'Ürün girişine alınırken firma ürünü için irsaliye numarası zorunludur.',
+            ], $_POST, 'Araç ürün girişine alınmadan önce irsaliye numarası girilmelidir.');
+        }
+
         Database::connection()
-            ->prepare('UPDATE delivery_notifications SET expected_arrival_date = COALESCE(expected_arrival_date, :today) WHERE id = :id')
-            ->execute(['id' => (int) $notification['id'], 'today' => $this->nullableInput('arrival_date') ?? date('Y-m-d')]);
+            ->prepare('UPDATE delivery_notifications SET expected_arrival_date = COALESCE(expected_arrival_date, :today), dispatch_number = COALESCE(NULLIF(:dispatch_number, ""), dispatch_number) WHERE id = :id')
+            ->execute([
+                'id' => (int) $notification['id'],
+                'today' => $this->nullableInput('arrival_date') ?? date('Y-m-d'),
+                'dispatch_number' => $dispatchNumber,
+            ]);
         VehicleProcessHistory::changeStatus((int) $notification['id'], 'kantara_geldi', 'Gelen ürün girişine aktarıldı', $this->nullableInput('entry_notes'));
 
         AuditLogger::log('incoming.pre_notified_started', 'delivery_notifications', (int) $notification['id'], [
             'plate' => $notification['plate_number'],
             'notification_number' => $notification['notification_number'],
             'arrival_date' => $this->nullableInput('arrival_date') ?? date('Y-m-d'),
+            'dispatch_number' => $dispatchNumber,
             'entry_notes' => $this->nullableInput('entry_notes'),
         ]);
+
+        if ((string) $this->input('return_to', '') === 'product_operations_entry') {
+            $this->redirect('/product-operations/entry?mode=inbound&message=transferred_to_weighbridge&notification_id=' . (int) $notification['id'] . '&focus=entry-' . (int) $notification['id'] . '&next=weighbridge');
+        }
 
         $this->redirect('/weighbridge-entry?plate=' . urlencode((string) $notification['plate_number']));
     }
@@ -176,8 +201,8 @@ final class IncomingProductController extends Controller
         DriverVehicleRegistry::recordUsageForEntry($notificationId);
 
         $plate = $this->plateReader->normalize((string) $this->input('plate_number'));
-        if ((string) $this->input('return_to', '') === 'product_operations') {
-            $this->redirect('/weighbridge-entry?plate=' . urlencode($plate));
+        if (in_array((string) $this->input('return_to', ''), ['product_operations', 'product_operations_entry'], true)) {
+            $this->redirect('/product-operations/entry?mode=inbound&message=saved_to_weighbridge&notification_id=' . $notificationId . '&focus=entry-' . $notificationId . '&next=weighbridge');
         }
 
         $this->redirect($this->incomingReturnTo('/incoming-products?message=saved&notification_id=' . $notificationId . '&q=' . urlencode($plate), 'saved'));
@@ -598,16 +623,7 @@ final class IncomingProductController extends Controller
 
     private function personSenders(): array
     {
-        return Database::connection()
-            ->query(
-                'SELECT sender_name, identity_number, sender_phone, sender_address
-                 FROM delivery_notifications
-                 WHERE sender_type = "person" AND sender_name IS NOT NULL AND sender_name <> ""
-                 GROUP BY sender_name, identity_number, sender_phone, sender_address
-                 ORDER BY sender_name ASC
-                 LIMIT 200'
-            )
-            ->fetchAll();
+        return SenderPersonRegistry::all();
     }
 
     private function createOrFindCompanyByName(string $name): int
@@ -716,7 +732,16 @@ final class IncomingProductController extends Controller
     private function incomingReturnTo(string $default, string $message): string
     {
         if ((string) $this->input('return_to', '') === 'product_operations_entry') {
-            return '/product-operations/entry?message=' . urlencode($message);
+            $query = [
+                'mode' => 'inbound',
+                'message' => $message,
+            ];
+            $notificationId = (int) $this->input('notification_id');
+            if ($notificationId > 0) {
+                $query['notification_id'] = (string) $notificationId;
+            }
+
+            return '/product-operations/entry?' . http_build_query($query);
         }
 
         if ((string) $this->input('return_to', '') === 'product_operations_pre_notifications') {

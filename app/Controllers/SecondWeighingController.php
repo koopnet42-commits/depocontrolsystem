@@ -77,7 +77,7 @@ final class SecondWeighingController extends Controller
         }
 
         if ($errors !== []) {
-            $this->redirectWithValidation('/second-weighing?plate=' . urlencode($record['plate_number']) . '&message=invalid', $errors);
+            $this->redirectWithValidation('/second-weighing?record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=7&message=invalid', $errors);
         }
 
         $netWeight = number_format($firstWeight - $secondWeightFloat, 3, '.', '');
@@ -135,7 +135,7 @@ final class SecondWeighingController extends Controller
             throw $exception;
         }
 
-        $this->redirect('/second-weighing?plate=' . urlencode($record['plate_number']) . '&message=completed');
+        $this->redirect('/second-weighing?entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=8&process_focus=1&message=completed');
     }
 
     private function completeOutbound(int $outboundId): void

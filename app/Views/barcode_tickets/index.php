@@ -8,6 +8,7 @@ $alerts = [
     'manual_required' => ['alert--danger', 'Uygun silo bulunamadı. Barkod basmak için manuel silo seçin.'],
     'manual_assigned' => ['alert--success', 'Manuel silo seçimi kaydedildi. Barkod / karekod basabilirsiniz.'],
     'missing_silo' => ['alert--danger', 'Silo seçmeden barkod basılamaz.'],
+    'silo_product_mismatch' => ['alert--danger', 'Seçtiğiniz silo bu ürüne ait değil. Ürün ile eşleşen bir silo seçmelisiniz.'],
     'not_found' => ['alert--danger', 'Barkod veya yönlendirilebilir araç kaydı bulunamadı.'],
 ];
 $alert = $alerts[$message ?? ($_GET['message'] ?? '')] ?? null;
@@ -57,6 +58,7 @@ $alert = $alerts[$message ?? ($_GET['message'] ?? '')] ?? null;
                 <?php endif; ?>
 
                 <?php foreach ($records as $record): ?>
+                    <?php $siloMismatch = (int) ($record['assigned_silo_id'] ?? 0) > 0 && (int) ($record['silo_product_id'] ?? 0) !== (int) ($record['product_id'] ?? 0); ?>
                     <tr class="<?= (int) ($selectedRecordId ?? 0) === (int) $record['weighbridge_record_id'] ? 'operation-row-highlight' : '' ?>">
                         <td><strong><?= htmlspecialchars($record['plate_number']) ?></strong></td>
                         <td><?= htmlspecialchars($record['company_name']) ?></td>
@@ -71,6 +73,9 @@ $alert = $alerts[$message ?? ($_GET['message'] ?? '')] ?? null;
                             <?php if ((int) ($record['assigned_silo_id'] ?? 0) > 0): ?>
                                 <span class="table-muted">Sistem önerisi: <?= htmlspecialchars((string) (($record['silo_code'] ?? '-') . ' - ' . ($record['silo_name'] ?? '-'))) ?></span>
                                 <strong>Nihai silo: <?= htmlspecialchars((string) (($record['silo_code'] ?? '-') . ' - ' . ($record['silo_name'] ?? '-'))) ?></strong>
+                                <?php if ($siloMismatch): ?>
+                                    <span class="badge badge--danger">Bu silo <?= htmlspecialchars((string) $record['product_name']) ?> ürünüyle eşleşmiyor</span>
+                                <?php endif; ?>
                             <?php else: ?>
                                 <span class="badge badge--danger">Silo seçilmedi</span>
                                 <form action="/barcode-tickets/assign-silo" method="post" class="inline-form">
@@ -78,10 +83,14 @@ $alert = $alerts[$message ?? ($_GET['message'] ?? '')] ?? null;
                                     <select name="silo_id" required>
                                         <option value="">Manuel silo seç</option>
                                         <?php foreach ($silos as $silo): ?>
-                                            <option value="<?= (int) $silo['id'] ?>"><?= htmlspecialchars($silo['code'] . ' - ' . $silo['name']) ?></option>
+                                            <?php $matchesProduct = (int) ($silo['product_id'] ?? 0) === (int) ($record['product_id'] ?? 0); ?>
+                                            <option value="<?= (int) $silo['id'] ?>" <?= $matchesProduct ? '' : 'disabled' ?>>
+                                                <?= htmlspecialchars($silo['code'] . ' - ' . $silo['name'] . ' / ' . ($silo['product_name'] ?? '-')) ?><?= $matchesProduct ? '' : ' - bu ürüne uygun değil' ?>
+                                            </option>
                                         <?php endforeach; ?>
                                     </select>
                                     <button class="button button--small" type="submit">Silo Seç</button>
+                                    <span class="table-muted">Sadece <?= htmlspecialchars((string) $record['product_name']) ?> ürünüyle eşleşen silolar seçilebilir.</span>
                                 </form>
                             <?php endif; ?>
                         </td>
@@ -95,11 +104,13 @@ $alert = $alerts[$message ?? ($_GET['message'] ?? '')] ?? null;
                             <?php endif; ?>
                         </td>
                         <td class="table-actions">
-                            <?php if ($record['barcode'] === null && (int) ($record['assigned_silo_id'] ?? 0) > 0): ?>
+                            <?php if ($record['barcode'] === null && (int) ($record['assigned_silo_id'] ?? 0) > 0 && ! $siloMismatch): ?>
                                 <form action="/barcode-tickets/generate" method="post" class="inline-form" target="_blank" data-refresh-after-submit="1200">
                                     <input type="hidden" name="record_id" value="<?= (int) $record['weighbridge_record_id'] ?>">
                                     <button class="button button--small button--primary" type="submit">Barkod Bas</button>
                                 </form>
+                            <?php elseif ($record['barcode'] === null && $siloMismatch): ?>
+                                <button class="button button--small" type="button" disabled>Ürün-silo uyumsuz</button>
                             <?php elseif ($record['barcode'] === null): ?>
                                 <button class="button button--small" type="button" disabled>Silo seçmeden basılamaz</button>
                             <?php else: ?>

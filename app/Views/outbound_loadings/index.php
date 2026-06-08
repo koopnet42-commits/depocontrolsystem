@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 $alerts = [
     'created' => ['alert--success', 'Ürün çıkışı kaydı oluşturuldu.'],
+    'created_to_weighbridge' => ['alert--success', 'Ürün çıkışı kaydı oluşturuldu. Araç kantar ekranına aktarıldı.'],
+    'started_to_weighbridge' => ['alert--success', 'Çıkış ön bildirimi sürece aktarıldı. Araç kantar ekranına aktarıldı.'],
     'first_saved' => ['alert--success', '1. tartım kaydedildi. Araç boş ağırlığı alındı.'],
     'first_required' => ['alert--danger', 'Önce 1. tartım kaydedilmelidir.'],
     'silo_mismatch' => ['alert--danger', 'Seçilen silo ürün tipiyle uyumlu değil.'],
@@ -40,7 +42,12 @@ $validationJson = json_encode($validation, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG
 </header>
 
 <?php if ($alert !== null): ?>
-    <div class="alert <?= htmlspecialchars($alert[0]) ?>"><?= htmlspecialchars($alert[1]) ?></div>
+    <div class="alert <?= htmlspecialchars($alert[0]) ?> operation-alert">
+        <span><?= htmlspecialchars($alert[1]) ?></span>
+        <?php if (in_array((string) ($message ?? ''), ['created_to_weighbridge', 'started_to_weighbridge'], true) && (int) ($_GET['id'] ?? 0) > 0): ?>
+            <a class="button button--small button--outbound" href="/weighbridge-entry?outbound_id=<?= (int) $_GET['id'] ?>&focus=outbound-<?= (int) $_GET['id'] ?>#outbound-first-weighing">Kantar Ekranına Git</a>
+        <?php endif; ?>
+    </div>
 <?php endif; ?>
 
 <section class="panel operation-form-card operation-form-card--outbound">
@@ -117,6 +124,7 @@ $validationJson = json_encode($validation, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG
             <div><span>1. tartım</span><strong><?= htmlspecialchars($selectedRecord['first_weight_kg'] === null ? '-' : $formatKg($selectedRecord['first_weight_kg'])) ?></strong></div>
             <div><span>2. tartım</span><strong><?= htmlspecialchars($selectedRecord['second_weight_kg'] === null ? '-' : $formatKg($selectedRecord['second_weight_kg'])) ?></strong></div>
             <div><span>Net çıkış</span><strong><?= htmlspecialchars($selectedRecord['net_quantity_kg'] === null ? '-' : $formatKg($selectedRecord['net_quantity_kg'])) ?></strong></div>
+            <div><span>Çıkış barkodu</span><strong><?= htmlspecialchars((string) ($selectedRecord['outbound_barcode'] ?? '-')) ?></strong></div>
         </div>
         <div class="operation-row">
             <?php $selectedStatus = (string) ($selectedRecord['status'] ?? ''); ?>
@@ -127,16 +135,12 @@ $validationJson = json_encode($validation, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG
                 </form>
             <?php endif; ?>
             <?php if ($selectedStatus === 'OUTBOUND_ARRIVED'): ?>
-                <form action="/outbound-loadings/first-weight" method="post">
-                    <input type="hidden" name="id" value="<?= (int) $selectedRecord['id'] ?>">
-                    <label class="field"><span>1. tartım kg (boş araç)</span><input type="number" name="first_weight_kg" min="1000" step="1" required></label>
-                    <button class="button button--primary button--outbound" type="submit">1. Tartımı Kaydet</button>
-                </form>
+                <a class="button button--primary button--outbound" href="/weighbridge-entry?outbound_id=<?= (int) $selectedRecord['id'] ?>&focus=outbound-<?= (int) $selectedRecord['id'] ?>#outbound-first-weighing">Kantar Ekranına Git</a>
             <?php endif; ?>
             <?php if ($selectedStatus === 'OUTBOUND_FIRST_WEIGHED'): ?>
                 <form action="/outbound-loadings/assign-silo" method="post">
                     <input type="hidden" name="id" value="<?= (int) $selectedRecord['id'] ?>">
-                    <button class="button button--primary button--outbound" type="submit">Yükleme Alanına Yönlendir</button>
+                    <button class="button button--primary button--outbound" type="submit">Barkodla Doluma Gönder</button>
                 </form>
             <?php endif; ?>
             <?php if ($selectedStatus === 'OUTBOUND_LOADING_ASSIGNED_TO_SILO'): ?>
@@ -214,6 +218,88 @@ function bindSenderLookup(form) {
     const personInput = form.querySelector('input[name="sender_name"]');
     const identity = form.querySelector('input[name="identity_number"]');
     const personHelp = form.querySelector('.js-person-help');
+    const safeSet = (field, value, force = false) => {
+        if (!field) return;
+        const next = value || '';
+        const previousAuto = field.dataset.autoFillValue || '';
+        if (force || field.value.trim() === '' || field.value === previousAuto) {
+            field.value = next;
+            field.dataset.autoFillValue = next;
+        }
+    };
+    const appendCompany = (record) => {
+        if (!record?.name) return;
+        if (!opCompanies.some((company) => String(company.id || '') === String(record.id || '') || normalizeOp(company.name) === normalizeOp(record.name))) {
+            opCompanies.push(record);
+        }
+        const list = document.getElementById('op-company-list');
+        if (list && !Array.from(list.options).some((option) => normalizeOp(option.value) === normalizeOp(record.name))) {
+            const option = document.createElement('option');
+            option.value = record.name;
+            list.appendChild(option);
+        }
+    };
+    const appendPerson = (record) => {
+        if (!record?.sender_name) return;
+        if (!opPeople.some((person) => normalizeOp(person.sender_name) === normalizeOp(record.sender_name))) {
+            opPeople.push(record);
+        }
+        const list = document.getElementById('op-person-list');
+        if (list && !Array.from(list.options).some((option) => normalizeOp(option.value) === normalizeOp(record.sender_name))) {
+            const option = document.createElement('option');
+            option.value = record.sender_name;
+            list.appendChild(option);
+        }
+    };
+    const openCompanyRecord = () => {
+        const typed = companyInput?.value.trim() || '';
+        if (typed === '' || opCompanies.some((company) => normalizeOp(company.name) === normalizeOp(typed)) || form.dataset.senderRecordModal === '1') return;
+        form.dataset.senderRecordModal = '1';
+        window.openSenderRecordModal?.({
+            type: 'company',
+            initial: {
+                company_name: typed,
+                sender_tax_number: tax?.value || '',
+                sender_phone: phone?.value || '',
+                sender_address: address?.value || '',
+            },
+            onSaved: (record) => {
+                appendCompany(record);
+                safeSet(companyInput, record.name, true);
+                safeSet(companyId, record.id, true);
+                safeSet(tax, record.tax_number || '', true);
+                safeSet(phone, record.phone || '', true);
+                safeSet(address, record.address || '', true);
+                if (companyHelp) companyHelp.textContent = 'Yeni firma kaydedildi ve forma aktarıldı.';
+                delete form.dataset.senderRecordModal;
+            },
+        });
+        window.setTimeout(() => delete form.dataset.senderRecordModal, 400);
+    };
+    const openPersonRecord = () => {
+        const typed = personInput?.value.trim() || '';
+        if (typed === '' || opPeople.some((person) => normalizeOp(person.sender_name) === normalizeOp(typed)) || form.dataset.senderRecordModal === '1') return;
+        form.dataset.senderRecordModal = '1';
+        window.openSenderRecordModal?.({
+            type: 'person',
+            initial: {
+                sender_name: typed,
+                identity_number: identity?.value || '',
+                sender_phone: phone?.value || '',
+                sender_address: address?.value || '',
+            },
+            onSaved: (record) => {
+                appendPerson(record);
+                safeSet(personInput, record.sender_name, true);
+                safeSet(identity, record.identity_number || '', true);
+                safeSet(phone, record.sender_phone || '', true);
+                safeSet(address, record.sender_address || '', true);
+                if (personHelp) personHelp.textContent = 'Yeni şahıs kaydedildi ve forma aktarıldı.';
+                delete form.dataset.senderRecordModal;
+            },
+        });
+        window.setTimeout(() => delete form.dataset.senderRecordModal, 400);
+    };
 
     const syncCompanyMatchState = () => {
         if (!companyInput || !companyId) return;
@@ -222,29 +308,31 @@ function bindSenderLookup(form) {
         companyId.value = match?.id || '';
         form.querySelectorAll('.sender-company').forEach((el) => el.classList.toggle('is-new-company', isNewCompany));
         if (match) {
-            if (tax) tax.value = match.tax_number || '';
-            if (phone) phone.value = match.phone || '';
-            if (address) address.value = match.address || '';
+            safeSet(tax, match.tax_number || '');
+            safeSet(phone, match.phone || '');
+            safeSet(address, match.address || '');
             if (companyHelp) companyHelp.textContent = 'Mevcut firma seçildi.';
         } else if (companyHelp) {
             companyHelp.textContent = companyInput.value.trim()
-                ? 'Yeni firma — vergi no, telefon ve adres bilgilerini girin; kayıt sırasında firma kartı oluşturulur.'
+                ? 'Firma bulunamadı. Alandan çıkınca yeni firma kaydı penceresi açılır.'
                 : 'Firma adı yazıldığında mevcut kayıtlar önerilir; listede yoksa yeni firma olarak kaydedilir.';
         }
     };
     companyInput?.addEventListener('input', syncCompanyMatchState);
+    companyInput?.addEventListener('blur', openCompanyRecord);
     syncCompanyMatchState();
     personInput?.addEventListener('input', () => {
         const match = opPeople.find((person) => normalizeOp(person.sender_name) === normalizeOp(personInput.value));
         if (match) {
-            identity.value = match.identity_number || '';
-            phone.value = match.sender_phone || '';
-            address.value = match.sender_address || '';
-            personHelp.textContent = 'Mevcut şahıs bilgileri getirildi.';
+            safeSet(identity, match.identity_number || '');
+            safeSet(phone, match.sender_phone || '');
+            safeSet(address, match.sender_address || '');
+            if (personHelp) personHelp.textContent = 'Mevcut şahıs bilgileri getirildi.';
         } else {
-            personHelp.textContent = personInput.value.trim() ? 'Şahıs bulunamadı. Bu çıkışta yeni şahıs bilgisi kullanılacak.' : 'Daha önce gelen şahıslar yazarken önerilir.';
+            if (personHelp) personHelp.textContent = personInput.value.trim() ? 'Şahıs bulunamadı. Alandan çıkınca yeni şahıs kaydı penceresi açılır.' : 'Daha önce gelen şahıslar yazarken önerilir.';
         }
     });
+    personInput?.addEventListener('blur', openPersonRecord);
     identity?.addEventListener('input', () => identity.value = identity.value.replace(/\D+/g, '').slice(0, 11));
     syncSenderForm(form);
 }

@@ -9,6 +9,7 @@ use App\Core\Database;
 use App\Services\AuditLogger;
 use App\Services\OutboundProcessHistory;
 use App\Services\PlateReaderService;
+use App\Services\SenderPersonRegistry;
 use PDO;
 
 final class OutboundLoadingController extends Controller
@@ -113,7 +114,10 @@ final class OutboundLoadingController extends Controller
             trim((string) $this->input('note', '')) ?: null
         );
 
-        $this->redirect($this->returnTo('created', $outboundId));
+        $this->redirect($this->returnTo(
+            $initialStatus === 'OUTBOUND_PRE_NOTIFIED' ? 'created' : 'created_to_weighbridge',
+            $outboundId
+        ));
     }
 
     public function startArrived(): void
@@ -132,7 +136,7 @@ final class OutboundLoadingController extends Controller
             trim((string) $this->input('note', '')) ?: 'Ön bildirimden çıkış sürecine aktarıldı'
         );
 
-        $this->redirect($this->returnTo('started', (int) $record['id']));
+        $this->redirect($this->returnTo('started_to_weighbridge', (int) $record['id']));
     }
 
     public function firstWeight(): void
@@ -147,9 +151,18 @@ final class OutboundLoadingController extends Controller
 
         Database::connection()->prepare(
             'UPDATE outbound_loadings
-             SET first_weight_kg = :first_weight_kg, first_weighed_at = NOW(), status = "OUTBOUND_FIRST_WEIGHED", updated_at = NOW()
+             SET first_weight_kg = :first_weight_kg,
+                 first_weighed_at = NOW(),
+                 outbound_barcode = COALESCE(outbound_barcode, :outbound_barcode),
+                 outbound_barcode_issued_at = COALESCE(outbound_barcode_issued_at, NOW()),
+                 status = "OUTBOUND_FIRST_WEIGHED",
+                 updated_at = NOW()
              WHERE id = :id'
-        )->execute(['id' => (int) $record['id'], 'first_weight_kg' => $weight]);
+        )->execute([
+            'id' => (int) $record['id'],
+            'first_weight_kg' => $weight,
+            'outbound_barcode' => $this->outboundBarcode((int) $record['id']),
+        ]);
 
         OutboundProcessHistory::record(
             (int) $record['id'],
@@ -159,7 +172,10 @@ final class OutboundLoadingController extends Controller
             number_format((float) $weight, 0, ',', '.') . ' kg'
         );
 
-        $this->redirect($this->returnTo('first_saved', (int) $record['id']));
+        $this->redirect($this->returnTo(
+            (string) $this->input('return_to', '') === 'weighbridge_entry' ? 'outbound_first_saved' : 'first_saved',
+            (int) $record['id']
+        ));
     }
 
     public function assignSilo(): void
@@ -239,11 +255,18 @@ final class OutboundLoadingController extends Controller
 
     private function returnTo(string $message, ?int $id = null): string
     {
-        if ((string) $this->input('return_to', '') === 'product_operations_entry') {
-            return '/product-operations/entry?mode=outbound&message=' . urlencode($message) . ($id !== null ? '&outbound_id=' . $id : '');
+        if ((string) $this->input('return_to', '') === 'weighbridge_entry') {
+            return '/weighbridge-entry?message=' . urlencode($message)
+                . ($id !== null ? '&outbound_id=' . $id . '&focus=outbound-' . $id . '#outbound-first-weighing' : '');
         }
 
-        return '/outbound-loadings?message=' . urlencode($message) . ($id !== null ? '&id=' . $id : '');
+        if ((string) $this->input('return_to', '') === 'product_operations_entry') {
+            return '/product-operations/entry?mode=outbound&message=' . urlencode($message)
+                . ($id !== null ? '&outbound_id=' . $id . '&focus=outbound-' . $id . '&next=weighbridge' : '');
+        }
+
+        return '/outbound-loadings?message=' . urlencode($message)
+            . ($id !== null ? '&id=' . $id . '&focus=outbound-' . $id : '');
     }
 
     private function records(): array
@@ -294,16 +317,7 @@ final class OutboundLoadingController extends Controller
 
     private function personSenders(): array
     {
-        return Database::connection()
-            ->query(
-                'SELECT sender_name, identity_number, sender_phone, sender_address
-                 FROM delivery_notifications
-                 WHERE sender_type = "person" AND sender_name IS NOT NULL AND sender_name <> ""
-                 GROUP BY sender_name, identity_number, sender_phone, sender_address
-                 ORDER BY sender_name ASC
-                 LIMIT 200'
-            )
-            ->fetchAll();
+        return SenderPersonRegistry::all();
     }
 
     private function senderCompanyId(): int
@@ -430,6 +444,8 @@ final class OutboundLoadingController extends Controller
             'sender_tax_number' => 'TEXT NULL',
             'sender_phone' => 'TEXT NULL',
             'sender_address' => 'TEXT NULL',
+            'outbound_barcode' => 'TEXT NULL',
+            'outbound_barcode_issued_at' => 'TEXT NULL',
         ] as $column => $definition) {
             if (! in_array($column, $columns, true)) {
                 $database->exec('ALTER TABLE outbound_loadings ADD COLUMN ' . $column . ' ' . $definition);
@@ -450,5 +466,10 @@ final class OutboundLoadingController extends Controller
                 note TEXT NULL
             )'
         );
+    }
+
+    private function outboundBarcode(int $id): string
+    {
+        return 'CIK-BRK-' . date('Ymd') . '-' . str_pad((string) $id, 5, '0', STR_PAD_LEFT);
     }
 }

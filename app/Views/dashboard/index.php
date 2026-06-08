@@ -65,7 +65,12 @@ $operationRowClass = static function (array $row): string {
     </div>
 </header>
 
-<section class="summary-grid summary-grid--six" aria-label="Operasyon özeti">
+<section class="dashboard-section-heading dashboard-section-heading--inbound operation-inbound">
+    <h2>Ürün Girişi Araç İzleme</h2>
+    <p>Ön bildirim, kantar, analiz, silo yönlendirme ve 2. tartım adımlarındaki giriş süreçleri.</p>
+</section>
+
+<section class="summary-grid summary-grid--six operation-inbound" aria-label="Giriş operasyon özeti">
     <?php
     $cards = [
         ['Bekleyen araçlar', (int) ($processCounts['waiting'] ?? 0), 'Bildirim aşaması', 'warning', 'waiting'],
@@ -95,7 +100,7 @@ $operationRowClass = static function (array $row): string {
     ?>
 </section>
 
-<section class="dashboard-section-heading operation-outbound">
+<section class="dashboard-section-heading dashboard-section-heading--outbound operation-outbound">
     <h2>Ürün Çıkışı Araç İzleme</h2>
     <p>Boş araç girişi, yükleme alanı ve 2. tartım adımlarındaki çıkış süreçleri.</p>
 </section>

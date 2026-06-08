@@ -10,6 +10,7 @@ use App\Core\Database;
 use App\Services\AuditLogger;
 use App\Services\DriverVehicleRegistry;
 use App\Services\PlateReaderService;
+use App\Services\SenderPersonRegistry;
 use App\Services\VehicleProcessHistory;
 use PDO;
 
@@ -190,20 +191,49 @@ final class DeliveryNotificationController extends Controller
     public function update(): void
     {
         $id = (int) $this->input('id');
+        $current = $this->findNotification($id);
+
+        if ($current === null) {
+            http_response_code(404);
+            echo 'Ön bildirim bulunamadı.';
+            return;
+        }
 
         $errors = $this->validationErrors();
 
         if ($errors !== []) {
-            $this->redirectWithValidation($this->returnTo('/delivery-notifications/edit?id=' . $id . '&message=invalid', 'invalid'), $errors);
+            $this->redirectWithValidation($this->editReturnPath($id, 'invalid'), $errors);
         }
 
         $senderCompanyId = $this->senderCompanyId();
         $vehicleId = $this->upsertVehicle($senderCompanyId);
         $payload = $this->payload($vehicleId, $senderCompanyId);
         $payload['id'] = $id;
+        $weighbridgeRecord = $this->findWeighbridgeRecordForNotification($id);
+        $changes = $this->criticalChanges($current, $payload);
+        $lockedCriticalChange = $weighbridgeRecord !== null
+            && $this->operationIdentityIsLocked($weighbridgeRecord)
+            && array_intersect(array_keys($changes), ['company_id', 'product_id', 'vehicle_id', 'operation_type']) !== [];
+
+        if ($lockedCriticalChange) {
+            $lockedMessage = $this->lockedCorrectionMessage($current, $weighbridgeRecord, $changes);
+            $this->redirectWithValidation($this->editReturnPath($id, 'locked_correction'), [
+                'product_id' => $lockedMessage,
+                'plate_number' => $lockedMessage,
+                'company_name' => $lockedMessage,
+            ], null, $lockedMessage);
+        }
+
+        $correctionNote = $this->nullableInput('correction_note');
+        if ($weighbridgeRecord !== null && $changes !== [] && $correctionNote === null) {
+            $statusLabel = self::STATUS_OPTIONS[(string) ($current['status'] ?? '')] ?? (string) ($current['status'] ?? 'süreçte');
+            $this->redirectWithValidation($this->editReturnPath($id, 'invalid'), [
+                'correction_note' => 'Bu araç "' . $statusLabel . '" aşamasında olduğu için bu düzeltmenin nedeni yazılmalıdır.',
+            ], null, 'Kayıt süreçteyken bilgi değiştiriyorsunuz. Operatörün sonradan neyin neden düzeltildiğini anlayabilmesi için açıklama zorunludur.');
+        }
 
         if ($this->statusIsActive($payload['status']) && $this->activeNotificationExistsForVehicle($vehicleId, $id)) {
-            $this->redirectWithValidation($this->returnTo('/delivery-notifications/edit?id=' . $id . '&message=active_plate_exists', 'active_plate_exists'), [
+            $this->redirectWithValidation($this->editReturnPath($id, 'active_plate_exists'), [
                 'plate_number' => 'Bu plaka için aktif bir süreç zaten var.',
             ]);
         }
@@ -231,7 +261,25 @@ final class DeliveryNotificationController extends Controller
         );
 
         $statement->execute($payload);
-        AuditLogger::log('delivery_notification.updated', 'delivery_notifications', $id, $payload);
+        if ($weighbridgeRecord !== null && $changes !== [] && ! $this->operationIdentityIsLocked($weighbridgeRecord)) {
+            $this->syncWeighbridgeRecordAfterCorrection($weighbridgeRecord, $payload, $changes);
+        }
+
+        AuditLogger::log('delivery_notification.updated', 'delivery_notifications', $id, [
+            'old' => $current,
+            'new' => $payload,
+            'changes' => $changes,
+            'correction_note' => $correctionNote,
+        ]);
+        if ($changes !== []) {
+            VehicleProcessHistory::record(
+                $id,
+                (string) ($current['status'] ?? ''),
+                (string) $payload['status'],
+                'Kayıt bilgileri düzeltildi',
+                $this->correctionDescription($changes, $correctionNote)
+            );
+        }
         DriverVehicleRegistry::recordUsageForEntry($id);
 
         $this->redirect($this->returnTo('/delivery-notifications?message=updated', 'updated'));
@@ -433,10 +481,6 @@ final class DeliveryNotificationController extends Controller
                 $errors['company_name'] = 'Bu alan zorunludur.';
             }
 
-            if ($this->nullableInput('dispatch_number') === null) {
-                $errors['dispatch_number'] = 'Firma ürünü için irsaliye numarası zorunludur.';
-            }
-
             return $errors;
         }
 
@@ -503,16 +547,7 @@ final class DeliveryNotificationController extends Controller
 
     private function personSenders(): array
     {
-        return Database::connection()
-            ->query(
-                'SELECT sender_name, identity_number, sender_phone, sender_address
-                 FROM delivery_notifications
-                 WHERE sender_type = "person" AND sender_name IS NOT NULL AND sender_name <> ""
-                 GROUP BY sender_name, identity_number, sender_phone, sender_address
-                 ORDER BY sender_name ASC
-                 LIMIT 200'
-            )
-            ->fetchAll();
+        return SenderPersonRegistry::all();
     }
 
     private function products(): array
@@ -529,6 +564,105 @@ final class DeliveryNotificationController extends Controller
         $notification = $statement->fetch(PDO::FETCH_ASSOC);
 
         return $notification === false ? null : $notification;
+    }
+
+    private function findWeighbridgeRecordForNotification(int $entryId): ?array
+    {
+        $statement = Database::connection()->prepare(
+            'SELECT wr.*,
+                    (SELECT COUNT(*) FROM sample_analysis sa WHERE sa.weighbridge_record_id = wr.id) AS analysis_count,
+                    (SELECT COUNT(*) FROM barcode_tickets bt WHERE bt.weighbridge_record_id = wr.id) AS barcode_count
+             FROM weighbridge_records wr
+             WHERE wr.delivery_notification_id = :entry_id
+             LIMIT 1'
+        );
+        $statement->execute(['entry_id' => $entryId]);
+        $record = $statement->fetch(PDO::FETCH_ASSOC);
+
+        return $record === false ? null : $record;
+    }
+
+    private function operationIdentityIsLocked(array $weighbridgeRecord): bool
+    {
+        return (int) ($weighbridgeRecord['analysis_count'] ?? 0) > 0
+            || (int) ($weighbridgeRecord['barcode_count'] ?? 0) > 0
+            || (($weighbridgeRecord['second_weight_kg'] ?? null) !== null && ($weighbridgeRecord['second_weight_kg'] ?? '') !== '');
+    }
+
+    private function lockedCorrectionMessage(array $current, array $weighbridgeRecord, array $changes): string
+    {
+        $statusLabel = self::STATUS_OPTIONS[(string) ($current['status'] ?? '')] ?? (string) ($current['status'] ?? 'süreçte');
+        $changedLabels = implode(', ', array_map(static fn (array $change): string => $change['label'], $changes));
+
+        if ((int) ($weighbridgeRecord['barcode_count'] ?? 0) > 0) {
+            return 'Bu araç "' . $statusLabel . '" aşamasında ve barkod/yönlendirme fişi basılmış. ' . $changedLabels . ' alanı doğrudan değiştirilemez; çünkü barkod ve silo yönlendirmesi eski bilgiye göre oluşturuldu. Önce barkod/silo aşamasını geri alın veya Süreç Onarım ekranından düzeltme yapın.';
+        }
+
+        if ((int) ($weighbridgeRecord['analysis_count'] ?? 0) > 0) {
+            return 'Bu araç "' . $statusLabel . '" aşamasında ve analiz kaydı oluşmuş. ' . $changedLabels . ' alanı doğrudan değiştirilemez; çünkü analiz sonucu eski ürün/firma/araç bilgisine bağlı. Önce analiz aşamasını geri alın veya Süreç Onarım ekranından düzeltme yapın.';
+        }
+
+        if (($weighbridgeRecord['second_weight_kg'] ?? null) !== null && ($weighbridgeRecord['second_weight_kg'] ?? '') !== '') {
+            return 'Bu araç için 2. tartım alınmış. ' . $changedLabels . ' alanı doğrudan değiştirilemez; çünkü net miktar ve stok hareketi kapanmış kayıt üzerinden hesaplandı. Önce yetkili süreç onarımı gerekir.';
+        }
+
+        return 'Bu kayıt "' . $statusLabel . '" aşamasında. ' . $changedLabels . ' alanı bu aşamada doğrudan değiştirilemez; önce ilgili süreci geri alın veya Süreç Onarım ekranını kullanın.';
+    }
+
+    private function criticalChanges(array $current, array $payload): array
+    {
+        $fields = [
+            'company_id' => 'Firma',
+            'product_id' => 'Ürün',
+            'vehicle_id' => 'Araç / plaka',
+            'expected_quantity_kg' => 'Bildirilen miktar',
+            'sender_type' => 'Gönderici tipi',
+            'dispatch_number' => 'İrsaliye no',
+            'operation_type' => 'İşlem tipi',
+        ];
+        $changes = [];
+
+        foreach ($fields as $field => $label) {
+            $old = $current[$field] ?? null;
+            $new = $payload[$field] ?? null;
+            if ((string) $old !== (string) $new) {
+                $changes[$field] = [
+                    'label' => $label,
+                    'old' => $old,
+                    'new' => $new,
+                ];
+            }
+        }
+
+        return $changes;
+    }
+
+    private function syncWeighbridgeRecordAfterCorrection(array $weighbridgeRecord, array $payload, array $changes): void
+    {
+        $assignedSiloSql = isset($changes['product_id']) ? ', assigned_silo_id = NULL' : '';
+        Database::connection()->prepare(
+            'UPDATE weighbridge_records
+             SET company_id = :company_id,
+                 product_id = :product_id,
+                 vehicle_id = :vehicle_id,
+                 notes = :notes,
+                 updated_at = NOW()
+                 ' . $assignedSiloSql . '
+             WHERE id = :id'
+        )->execute([
+            'id' => (int) $weighbridgeRecord['id'],
+            'company_id' => (int) $payload['company_id'],
+            'product_id' => (int) $payload['product_id'],
+            'vehicle_id' => (int) $payload['vehicle_id'],
+            'notes' => trim((string) ($weighbridgeRecord['notes'] ?? '') . "\nKayıt bilgisi düzeltildi: " . ($this->nullableInput('correction_note') ?? '-')),
+        ]);
+    }
+
+    private function correctionDescription(array $changes, ?string $note): string
+    {
+        $labels = array_map(static fn (array $change): string => $change['label'], $changes);
+
+        return 'Düzeltilen alanlar: ' . implode(', ', $labels) . '. Açıklama: ' . ($note ?? '-');
     }
 
     private function findVehicle(int $id): ?array
@@ -682,6 +816,13 @@ final class DeliveryNotificationController extends Controller
     {
         $returnTo = (string) $this->input('return_to', '');
 
+        if ($returnTo === 'vehicle_process') {
+            $entryId = (int) $this->input('id');
+            $vehicleStep = max(0, (int) $this->input('vehicle_step', 0));
+
+            return '/dashboard?entry_id=' . $entryId . '&vehicle_step=' . $vehicleStep . '&process_focus=1&message=' . urlencode($message);
+        }
+
         if ($returnTo === 'product_operations_pre_notifications') {
             return '/product-operations/pre-notifications?message=' . urlencode($message);
         }
@@ -695,6 +836,21 @@ final class DeliveryNotificationController extends Controller
         }
 
         return $default;
+    }
+
+    private function editReturnPath(int $id, string $message): string
+    {
+        $query = [
+            'id=' . $id,
+            'message=' . urlencode($message),
+        ];
+
+        if ((string) $this->input('return_to', '') !== '') {
+            $query[] = 'return_to=' . urlencode((string) $this->input('return_to'));
+            $query[] = 'vehicle_step=' . max(0, (int) $this->input('vehicle_step', 0));
+        }
+
+        return '/delivery-notifications/edit?' . implode('&', $query);
     }
 
     private function ensureNotificationMetaColumns(): void

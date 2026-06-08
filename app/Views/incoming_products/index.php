@@ -25,6 +25,9 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
 <?php if ($alert !== null): ?>
     <div class="alert <?= htmlspecialchars($alert[0]) ?>"><?= htmlspecialchars($alert[1]) ?></div>
 <?php endif; ?>
+<?php if (! empty($validation['general'])): ?>
+    <div class="alert alert--danger"><?= htmlspecialchars((string) $validation['general']) ?></div>
+<?php endif; ?>
 
 <section class="panel incoming-panel">
     <div class="section-heading">
@@ -105,6 +108,13 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
             </div>
             <form action="/incoming-products/start-pre-notified" method="post" class="operation-row">
                 <input type="hidden" name="notification_id" value="<?= (int) $selectedNotification['id'] ?>">
+                <?php if (($selectedNotification['sender_type'] ?? 'company') === 'company'): ?>
+                    <label class="field<?= $fieldClass('dispatch_number') ?>">
+                        <span>İrsaliye numarası</span>
+                        <input type="text" name="dispatch_number" value="<?= htmlspecialchars((string) ($validation['old']['dispatch_number'] ?? $selectedNotification['dispatch_number'] ?? '')) ?>" required>
+                        <?= $fieldError('dispatch_number') ?>
+                    </label>
+                <?php endif; ?>
                 <button class="button button--primary" type="submit">Kantar Girişine Al</button>
             </form>
         </div>
@@ -215,6 +225,98 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
     const incomingAddressInput = document.querySelector('textarea[name="sender_address"]');
     const incomingCompanyHelp = document.getElementById('incoming-company-help');
     const incomingPersonHelp = document.getElementById('incoming-person-help');
+    const incomingForm = document.querySelector('.incoming-form');
+
+    function incomingSafeSet(field, value, force = false) {
+        if (!field) return;
+        const next = value || '';
+        const previousAuto = field.dataset.autoFillValue || '';
+        if (force || field.value.trim() === '' || field.value === previousAuto) {
+            field.value = next;
+            field.dataset.autoFillValue = next;
+        }
+    }
+
+    function appendIncomingCompany(record) {
+        if (!record?.name) return;
+        if (!incomingCompanies.some((company) => String(company.id || '') === String(record.id || '') || normalizeIncomingText(company.name) === normalizeIncomingText(record.name))) {
+            incomingCompanies.push(record);
+        }
+        const list = document.getElementById('incoming-company-suggestions');
+        if (list && !Array.from(list.options).some((option) => normalizeIncomingText(option.value) === normalizeIncomingText(record.name))) {
+            const option = document.createElement('option');
+            option.value = record.name;
+            list.appendChild(option);
+        }
+    }
+
+    function appendIncomingPerson(record) {
+        if (!record?.sender_name) return;
+        if (!incomingPeople.some((person) => normalizeIncomingText(person.sender_name) === normalizeIncomingText(record.sender_name))) {
+            incomingPeople.push(record);
+        }
+        const list = document.getElementById('incoming-person-suggestions');
+        if (list && !Array.from(list.options).some((option) => normalizeIncomingText(option.value) === normalizeIncomingText(record.sender_name))) {
+            const option = document.createElement('option');
+            option.value = record.sender_name;
+            list.appendChild(option);
+        }
+    }
+
+    function openIncomingCompanyRecord() {
+        const typed = incomingCompanyInput?.value.trim() || '';
+        if (typed === '' || incomingCompanies.some((company) => normalizeIncomingText(company.name) === normalizeIncomingText(typed)) || incomingForm?.dataset.senderRecordModal === '1') return;
+        if (incomingForm) incomingForm.dataset.senderRecordModal = '1';
+        window.openSenderRecordModal?.({
+            type: 'company',
+            initial: {
+                company_name: typed,
+                sender_tax_number: incomingTaxInput?.value || '',
+                sender_phone: incomingPhoneInput?.value || '',
+                sender_address: incomingAddressInput?.value || '',
+            },
+            onSaved: (record) => {
+                appendIncomingCompany(record);
+                incomingSafeSet(incomingCompanyInput, record.name, true);
+                incomingSafeSet(incomingCompanyIdInput, record.id, true);
+                incomingSafeSet(incomingTaxInput, record.tax_number || '', true);
+                incomingSafeSet(incomingPhoneInput, record.phone || '', true);
+                incomingSafeSet(incomingAddressInput, record.address || '', true);
+                if (incomingCompanyHelp) incomingCompanyHelp.textContent = 'Yeni firma kaydedildi ve forma aktarıldı.';
+                if (incomingForm) delete incomingForm.dataset.senderRecordModal;
+            },
+        });
+        window.setTimeout(() => {
+            if (incomingForm) delete incomingForm.dataset.senderRecordModal;
+        }, 400);
+    }
+
+    function openIncomingPersonRecord() {
+        const typed = incomingSenderNameInput?.value.trim() || '';
+        if (typed === '' || incomingPeople.some((person) => normalizeIncomingText(person.sender_name) === normalizeIncomingText(typed)) || incomingForm?.dataset.senderRecordModal === '1') return;
+        if (incomingForm) incomingForm.dataset.senderRecordModal = '1';
+        window.openSenderRecordModal?.({
+            type: 'person',
+            initial: {
+                sender_name: typed,
+                identity_number: incomingIdentityInput?.value || '',
+                sender_phone: incomingPhoneInput?.value || '',
+                sender_address: incomingAddressInput?.value || '',
+            },
+            onSaved: (record) => {
+                appendIncomingPerson(record);
+                incomingSafeSet(incomingSenderNameInput, record.sender_name, true);
+                incomingSafeSet(incomingIdentityInput, record.identity_number || '', true);
+                incomingSafeSet(incomingPhoneInput, record.sender_phone || '', true);
+                incomingSafeSet(incomingAddressInput, record.sender_address || '', true);
+                if (incomingPersonHelp) incomingPersonHelp.textContent = 'Yeni şahıs kaydedildi ve forma aktarıldı.';
+                if (incomingForm) delete incomingForm.dataset.senderRecordModal;
+            },
+        });
+        window.setTimeout(() => {
+            if (incomingForm) delete incomingForm.dataset.senderRecordModal;
+        }, 400);
+    }
 
     function syncIncomingCompany() {
         const typed = normalizeIncomingText(incomingCompanyInput?.value);
@@ -222,16 +324,16 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
 
         if (match) {
             incomingCompanyIdInput.value = match.id || '';
-            incomingTaxInput.value = match.tax_number || '';
-            incomingPhoneInput.value = match.phone || '';
-            incomingAddressInput.value = match.address || '';
+            incomingSafeSet(incomingTaxInput, match.tax_number || '');
+            incomingSafeSet(incomingPhoneInput, match.phone || '');
+            incomingSafeSet(incomingAddressInput, match.address || '');
             incomingCompanyHelp.textContent = 'Mevcut firma seçildi. Bilgiler firma kartından getirildi.';
             return;
         }
 
         incomingCompanyIdInput.value = '';
         incomingCompanyHelp.textContent = incomingCompanyInput?.value.trim()
-            ? 'Firma bulunamadı. Kaydedince yeni firma kaydı otomatik oluşturulacak.'
+            ? 'Firma bulunamadı. Alandan çıkınca yeni firma kaydı penceresi açılır.'
             : 'Firma adı yazıldığında mevcut kayıtlar önerilir.';
     }
 
@@ -240,20 +342,22 @@ $fieldClass = static fn (string $field): string => isset($validation['errors'][$
         const match = incomingPeople.find((person) => normalizeIncomingText(person.sender_name) === typed);
 
         if (match) {
-            incomingIdentityInput.value = match.identity_number || '';
-            incomingPhoneInput.value = match.sender_phone || '';
-            incomingAddressInput.value = match.sender_address || '';
+            incomingSafeSet(incomingIdentityInput, match.identity_number || '');
+            incomingSafeSet(incomingPhoneInput, match.sender_phone || '');
+            incomingSafeSet(incomingAddressInput, match.sender_address || '');
             incomingPersonHelp.textContent = 'Mevcut şahıs bilgileri getirildi.';
             return;
         }
 
         incomingPersonHelp.textContent = incomingSenderNameInput?.value.trim()
-            ? 'Şahıs bulunamadı. Kaydedince bu girişte yeni şahıs bilgisi oluşacak.'
+            ? 'Şahıs bulunamadı. Alandan çıkınca yeni şahıs kaydı penceresi açılır.'
             : 'Daha önce gelen şahıslar yazarken önerilir.';
     }
 
     incomingCompanyInput?.addEventListener('input', syncIncomingCompany);
+    incomingCompanyInput?.addEventListener('blur', openIncomingCompanyRecord);
     incomingSenderNameInput?.addEventListener('input', syncIncomingPerson);
+    incomingSenderNameInput?.addEventListener('blur', openIncomingPersonRecord);
     incomingIdentityInput?.addEventListener('input', () => {
         incomingIdentityInput.value = incomingIdentityInput.value.replace(/\D+/g, '').slice(0, 11);
     });

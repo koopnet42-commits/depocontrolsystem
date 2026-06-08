@@ -25,9 +25,7 @@ $menuGroups = [
     [
         'title' => 'ÜRÜN',
         'children' => [
-            ['title' => 'Ürün Ön Bildirimi', 'route' => '/product-operations/pre-notifications'],
-            ['title' => 'Ürün Girişi / Çıkışı', 'route' => '/product-operations/entry'],
-            ['title' => 'Ürün Çıkışı İzleme', 'route' => '/product-operations/entry?mode=outbound'],
+            ['title' => 'Ürün İşlemleri', 'route' => '/product-operations'],
             ['title' => 'Raporlar', 'route' => '/reports'],
         ],
     ],
@@ -50,15 +48,6 @@ $menuGroups = [
             ['title' => 'Silo Tanımları', 'route' => '/silos'],
             ['title' => 'Silo Yönlendirme', 'route' => '/silo-rules'],
             ['title' => 'Yönlendirme Bilgisi', 'route' => '/unloading-operations'],
-        ],
-    ],
-    [
-        'title' => 'Araç Süreç Takibi',
-        'children' => [
-            ['title' => 'Giriş Araç İzleme', 'route' => '/product-operations/entry?mode=inbound'],
-            ['title' => 'Çıkış Araç İzleme', 'route' => '/product-operations/entry?mode=outbound'],
-            ['title' => 'Aktif Araçlar', 'route' => '/process-repair'],
-            ['title' => 'Tamamlanan İşlemler', 'route' => '/reports?status=tamamlandı'],
         ],
     ],
     [

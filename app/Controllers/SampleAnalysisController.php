@@ -135,7 +135,7 @@ final class SampleAnalysisController extends Controller
         $errors = $this->analysisValidationErrors($payload);
 
         if ($errors !== []) {
-            $this->redirectWithValidation('/sample-analysis/edit?record_id=' . (int) $record['weighbridge_record_id'] . '&message=invalid_values', $errors);
+            $this->redirectWithValidation('/sample-analysis/edit?record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=3&message=invalid_values', $errors);
         }
 
         $acceptance = $this->acceptanceService->evaluate((int) $record['product_id'], $payload);
@@ -252,26 +252,33 @@ final class SampleAnalysisController extends Controller
                 (int) $targetRule['silo_id']
             );
 
-            $this->redirect('/barcode-tickets?message=routed');
+            $this->redirect('/barcode-tickets?record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=5&process_focus=1&message=routed');
         }
 
-        $this->redirect('/barcode-tickets?message=manual_required&record_id=' . (int) $record['weighbridge_record_id']);
+        $this->redirect('/barcode-tickets?message=manual_required&record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=4');
     }
 
     public function manualSilo(): void
     {
-        $record = $this->findAnalysisRecord((int) $this->input('weighbridge_record_id'));
+        $recordId = (int) $this->input('weighbridge_record_id');
+        $record = $this->findAnalysisRecord($recordId);
         $siloId = (int) $this->input('silo_id');
 
-        if ($record !== null && $siloId > 0) {
-            $this->assignSilo(
-                (int) $record['weighbridge_record_id'],
-                (int) $record['delivery_notification_id'],
-                $siloId
-            );
+        if ($record === null || $siloId <= 0) {
+            $this->redirect('/barcode-tickets?message=missing_silo&record_id=' . $recordId);
         }
 
-        $this->redirect('/barcode-tickets?message=manual_assigned');
+        if (! $this->siloMatchesProduct($siloId, (int) $record['product_id'])) {
+            $this->redirect('/barcode-tickets?message=silo_product_mismatch&record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=4');
+        }
+
+        $this->assignSilo(
+            (int) $record['weighbridge_record_id'],
+            (int) $record['delivery_notification_id'],
+            $siloId
+        );
+
+        $this->redirect('/barcode-tickets?message=manual_assigned&record_id=' . (int) $record['weighbridge_record_id'] . '&entry_id=' . (int) $record['delivery_notification_id'] . '&vehicle_step=5&process_focus=1');
     }
 
     public function rejectionPrint(): void
@@ -522,6 +529,11 @@ final class SampleAnalysisController extends Controller
 
     private function assignSilo(int $recordId, int $notificationId, int $siloId): void
     {
+        $record = $this->findAnalysisRecord($recordId);
+        if ($record === null || ! $this->siloMatchesProduct($siloId, (int) $record['product_id'])) {
+            $this->redirect('/barcode-tickets?message=silo_product_mismatch&record_id=' . $recordId);
+        }
+
         $statement = Database::connection()->prepare(
             'UPDATE weighbridge_records
              SET assigned_silo_id = :assigned_silo_id,
@@ -540,8 +552,21 @@ final class SampleAnalysisController extends Controller
     private function silos(): array
     {
         return Database::connection()
-            ->query('SELECT id, code, name FROM silos WHERE is_active = 1 ORDER BY code ASC')
+            ->query('SELECT id, code, name, product_id FROM silos WHERE is_active = 1 ORDER BY code ASC')
             ->fetchAll();
+    }
+
+    private function siloMatchesProduct(int $siloId, int $productId): bool
+    {
+        if ($siloId <= 0 || $productId <= 0) {
+            return false;
+        }
+
+        $statement = Database::connection()->prepare('SELECT product_id FROM silos WHERE id = :id AND is_active = 1 LIMIT 1');
+        $statement->execute(['id' => $siloId]);
+        $siloProductId = $statement->fetchColumn();
+
+        return $siloProductId !== false && (int) $siloProductId === $productId;
     }
 
     private function products(): array

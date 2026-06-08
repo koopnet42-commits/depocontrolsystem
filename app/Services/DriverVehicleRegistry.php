@@ -271,15 +271,18 @@ final class DriverVehicleRegistry
 
     private static function vehiclePayload(array $vehicle): array
     {
+        $history = self::vehicleHistory((int) $vehicle['id']);
+
         return [
             'id' => (int) $vehicle['id'],
             'plate_number' => $vehicle['plate_number'] ?? '',
             'normalized_plate' => $vehicle['normalized_plate'] ?? self::normalizePlate((string) ($vehicle['plate_number'] ?? '')),
             'brand' => $vehicle['brand'] ?? '',
             'model' => $vehicle['model'] ?? '',
-            'driver_name' => $vehicle['driver_name'] ?? '',
-            'driver_phone' => $vehicle['driver_phone'] ?? '',
-            'history' => self::vehicleHistory((int) $vehicle['id']),
+            'driver_name' => $vehicle['driver_name'] ?: ($history['driver_name'] ?? ''),
+            'driver_phone' => $vehicle['driver_phone'] ?: ($history['driver_phone'] ?? ''),
+            'driver_identity_number' => $history['driver_identity_number'] ?? '',
+            'history' => $history,
         ];
     }
 
@@ -354,7 +357,7 @@ final class DriverVehicleRegistry
     private static function vehicleHistory(int $vehicleId): array
     {
         $statement = Database::connection()->prepare(
-            'SELECT dvh.used_at, d.full_name AS driver_name, p.name AS product_name, COUNT(*) OVER() AS total_count
+            'SELECT dvh.used_at, d.full_name AS driver_name, d.phone AS driver_phone, d.identity_number AS driver_identity_number, p.name AS product_name, COUNT(*) OVER() AS total_count
              FROM driver_vehicle_history dvh
              LEFT JOIN drivers d ON d.id = dvh.driver_id
              LEFT JOIN delivery_notifications dn ON dn.id = dvh.entry_id

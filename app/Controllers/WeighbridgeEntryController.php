@@ -9,6 +9,7 @@ use App\Core\Controller;
 use App\Core\Database;
 use App\Services\AuditLogger;
 use App\Services\BarrierGateService;
+use App\Services\OutboundProcessService;
 use App\Services\VehicleProcessHistory;
 use App\Services\PlateReaderService;
 use App\Services\WeighbridgeScaleService;
@@ -40,6 +41,10 @@ final class WeighbridgeEntryController extends Controller
             'record' => $notification === null ? null : $this->findRecordByNotification((int) $notification['id']),
             'arrivals' => $this->arrivals(),
             'activeRecord' => $activeRecord,
+            'outboundFirstWeighingWaiting' => (new OutboundProcessService())->listByStatuses(['OUTBOUND_ARRIVED']),
+            'selectedOutboundRecord' => ((int) $this->input('outbound_id')) > 0
+                ? (new OutboundProcessService())->detail((int) $this->input('outbound_id'))
+                : null,
             'scaleStatus' => $this->scale->status($activeRecord['plate_number'] ?? null),
             'analysisWaiting' => $this->analysisWaiting(),
             'secondWeighingWaiting' => $this->secondWeighingWaiting(),
@@ -81,7 +86,7 @@ final class WeighbridgeEntryController extends Controller
 
         $message = $result['success'] ? 'barrier_opened' : 'barrier_failed';
 
-        $this->redirect('/weighbridge-entry?message=' . $message);
+        $this->redirect('/weighbridge-entry?entry_id=' . (int) $notification['id'] . '&vehicle_step=1&process_focus=1&message=' . $message);
     }
 
     public function markOnScale(): void
@@ -93,7 +98,7 @@ final class WeighbridgeEntryController extends Controller
         }
 
         if (! in_array($notification['status'], ['giriş_bariyeri_açıldı', 'at_weighbridge'], true)) {
-            $this->redirect('/weighbridge-entry?message=barrier_required');
+            $this->redirect('/weighbridge-entry?entry_id=' . (int) $notification['id'] . '&vehicle_step=1&message=barrier_required');
         }
 
         if ($this->findRecordByNotification((int) $notification['id']) === null) {
@@ -118,7 +123,7 @@ final class WeighbridgeEntryController extends Controller
             'plate' => $notification['plate_number'],
         ]);
 
-        $this->redirect('/weighbridge-entry?message=vehicle_on_scale');
+        $this->redirect('/weighbridge-entry?entry_id=' . (int) $notification['id'] . '&vehicle_step=1&process_focus=1&message=vehicle_on_scale');
     }
 
     public function saveFirstWeight(): void
@@ -130,8 +135,8 @@ final class WeighbridgeEntryController extends Controller
             $this->redirect('/weighbridge-entry?message=not_found');
         }
 
-        if (! in_array($notification['status'], ['kantara_geldi', 'kantarda', 'at_weighbridge'], true)) {
-            $this->redirect('/weighbridge-entry?plate=' . urlencode($notification['plate_number']) . '&message=barrier_required');
+        if (! in_array($notification['status'], ['kantara_geldi', 'kantara_yonlendirildi', 'giriş_bariyeri_bekliyor', 'giriş_bariyeri_açıldı', 'kantarda', 'at_weighbridge'], true)) {
+            $this->redirect('/weighbridge-entry?plate=' . urlencode($notification['plate_number']) . '&entry_id=' . $notificationId . '&vehicle_step=1&message=barrier_required');
         }
 
         $firstWeight = $this->decimalInputOrNull('first_weight_kg');
@@ -148,7 +153,7 @@ final class WeighbridgeEntryController extends Controller
         }
 
         if ($errors !== []) {
-            $this->redirectWithValidation('/weighbridge-entry?plate=' . urlencode($notification['plate_number']) . '&barrier=opened&message=invalid', $errors);
+            $this->redirectWithValidation('/weighbridge-entry?plate=' . urlencode($notification['plate_number']) . '&entry_id=' . $notificationId . '&vehicle_step=1&barrier=opened&message=invalid', $errors);
         }
 
         $existingRecord = $this->findRecordByNotification($notificationId);
@@ -190,7 +195,7 @@ final class WeighbridgeEntryController extends Controller
         VehicleProcessHistory::record($notificationId, (string) $notification['status'], 'ilk_tartım_alındı', 'İlk tartım alındı');
         VehicleProcessHistory::changeStatus($notificationId, 'analiz_bekliyor', 'Araç analiz için bekliyor', 'İlk tartım kaydedildi ve araç numune/analiz kuyruğuna alındı.');
 
-        $this->redirect('/weighbridge-entry?plate=' . urlencode($notification['plate_number']) . '&message=weight_saved');
+        $this->redirect('/weighbridge-entry?plate=' . urlencode($notification['plate_number']) . '&entry_id=' . $notificationId . '&vehicle_step=3&process_focus=1&message=weight_saved');
     }
 
     public function rollback(): void
@@ -210,7 +215,7 @@ final class WeighbridgeEntryController extends Controller
         $hasFirstWeight = $record !== null && $record['first_weight_kg'] !== null && $record['first_weight_kg'] !== '';
 
         if ($hasFirstWeight && ! $this->canAdminRollbackWeighbridge()) {
-            $this->redirect('/weighbridge-entry?plate=' . urlencode((string) $notification['plate_number']) . '&message=rollback_weight_locked');
+            $this->redirect('/weighbridge-entry?plate=' . urlencode((string) $notification['plate_number']) . '&entry_id=' . $notificationId . '&vehicle_step=1&message=rollback_weight_locked');
         }
 
         $reason = $this->nullableInput('rollback_reason');
@@ -231,7 +236,7 @@ final class WeighbridgeEntryController extends Controller
         }
 
         if ($errors !== []) {
-            $this->redirectWithValidation('/weighbridge-entry?plate=' . urlencode((string) $notification['plate_number']) . '&message=invalid', $errors);
+            $this->redirectWithValidation('/weighbridge-entry?plate=' . urlencode((string) $notification['plate_number']) . '&entry_id=' . $notificationId . '&vehicle_step=1&message=invalid', $errors);
         }
 
         $oldStatus = (string) $notification['status'];
@@ -293,10 +298,10 @@ final class WeighbridgeEntryController extends Controller
                 'plate' => $notification['plate_number'],
                 'message' => $exception->getMessage(),
             ]);
-            $this->redirect('/weighbridge-entry?plate=' . urlencode((string) $notification['plate_number']) . '&message=rollback_failed');
+            $this->redirect('/weighbridge-entry?plate=' . urlencode((string) $notification['plate_number']) . '&entry_id=' . $notificationId . '&vehicle_step=1&message=rollback_failed');
         }
 
-        $this->redirect('/weighbridge-entry?message=rollback_done');
+        $this->redirect('/weighbridge-entry?entry_id=' . $notificationId . '&vehicle_step=1&process_focus=1&message=rollback_done');
     }
 
     private function canRollbackWeighbridge(): bool
@@ -396,8 +401,21 @@ final class WeighbridgeEntryController extends Controller
 
     private function activeKantarRecord(): ?array
     {
+        $entryId = (int) $this->input('entry_id');
+        if ($entryId > 0) {
+            $rows = $this->fetchKantarRows(
+                'WHERE dn.id = ' . $entryId . '
+                    AND dn.status IN ("kantara_geldi", "kantara_yonlendirildi", "giriş_bariyeri_bekliyor", "giriş_bariyeri_açıldı", "kantarda", "at_weighbridge")
+                 LIMIT 1'
+            );
+
+            if (($rows[0] ?? null) !== null) {
+                return $rows[0];
+            }
+        }
+
         $rows = $this->fetchKantarRows(
-            'WHERE dn.status IN ("giriş_bariyeri_açıldı", "kantarda", "at_weighbridge")
+            'WHERE dn.status IN ("kantara_geldi", "kantara_yonlendirildi", "giriş_bariyeri_bekliyor", "giriş_bariyeri_açıldı", "kantarda", "at_weighbridge")
              ORDER BY dn.updated_at ASC, dn.id ASC
              LIMIT 1'
         );
